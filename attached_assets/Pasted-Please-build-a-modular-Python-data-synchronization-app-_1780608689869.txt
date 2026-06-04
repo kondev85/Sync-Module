@@ -1,0 +1,32 @@
+Please build a modular Python data synchronization app that scrapes attendee profiles from a Swapcard-hosted event API and syncs them into a Notion Contacts Database. 
+
+### Architecture Requirements
+Split the logic across three files to maintain a clean codebase:
+1. `config.py`: For global settings, timing constraints, and handling credential variables.
+2. `notion_sync.py`: For structuring payloads and sending batches securely to the Notion API.
+3. `main.py`: The core controller executing the paganated request loop, handling nested data extractions, and processing safe delays.
+
+### 1. Data Mapping & Extractions
+The backend utilizes a GraphQL endpoint (`https://api.swapcard.com/graphql`). The response returns a `nodes` array containing attendee objects. You must dynamically extract properties from these deep fields to map to a flat structure matching these exact Notion properties:
+- Name (Title): Combined string of node['firstName'] and node['lastName'].
+- Company (Rich Text): Found in node['organization'].
+- Role (Rich Text): Swapcard pushes the job title inside a custom field array. Look inside node['fields']. Iterate through the list until you find an item where `field['definition']['name'] == 'Job title'` or similar registration metadata, then extract its `field['value']`. If missing, fall back to node['jobTitle'].
+- LinkedIn (URL): Stored in a nested array. Inspect node['socialNetworks']. Loop through to find an object where `type == 'LINKEDIN'`, and grab its accompanying `link` value.
+- Notes (Rich Text): Extract from node['biography'] (the user profile description).
+- iGBLive (Select/Checkbox/Status): Hardcode this value as "Yes" for every entry processed.
+
+### 2. Defensive Scraping & Security
+To ensure account longevity and stealth execution:
+- Authentication: Do NOT hardcode authorization values or browser session identifiers. Retrieve the target Bearer token and custom cookies securely using `os.environ`.
+- Humanized Delays: Introduce a randomized pause (`time.sleep(random.uniform(a, b))`) between pagination requests to safely match a human browsing cadence.
+- Rate Limiting: Introduce a minor interval (0.3 seconds) between singular row insertion requests to Notion to cleanly respect their structural API thresholds.
+
+### 3. Core Pagination Loop
+Use standard `requests.post()` tracking. The pagination payload logic requires handling the cursor string cleanly:
+- Extract the initial batch using the root `view(id: "RXZlbnRWaWV3XzEyNjYyNzU=")`.
+- Read `pageInfo['hasNextPage']` and `pageInfo['endCursor']` from the response.
+- If `hasNextPage` is true, pass the `endCursor` string into the variables mapping parameter (`after: $after`) on the subsequent call. Loop systematically until `hasNextPage` becomes false.
+
+Please draft these components, include robust try-except error catching blocks around network requests, and instruct me on which Secret environment tokens I need to populate in the Replit platform settings panel to safely initialize the runtime environment.
+
+Also if you have questions or beter suggestions, lets discuss them before you start working on the app 
