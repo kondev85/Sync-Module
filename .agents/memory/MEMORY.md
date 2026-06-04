@@ -1,1 +1,3 @@
 - [Swapcard people API](swapcard-people-api.md) — introspection off; people list served via persisted GraphQL query (rotating hash, batched array), capture op+hash from browser, not raw queries.
+- [Notion relation-property quirk](notion-relation-property-quirk.md) — a relation whose linked DB isn't shared is invisible to the API yet rejects writes; user must retype to Text; make writers schema-aware.
+- [Sandbox process reaping](sandbox-detached-process-reaping.md) — detached/background processes die when the launching tool call returns; run long jobs in the Shell, verify with capped batches.

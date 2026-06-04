@@ -44,6 +44,16 @@ ROW_INSERT_INTERVAL = 0.3
 
 # === Network ===
 REQUEST_TIMEOUT = 30  # seconds
+# Base wait (seconds) before retrying a rate-limited (429) or 5xx Notion call.
+# Used as-is for 429 when no Retry-After header is present, and as the base for
+# exponential backoff on 5xx.
+NOTION_RETRY_WAIT = max(0.0, float(os.environ.get("NOTION_RETRY_WAIT", "2.0")))
+NOTION_MAX_RETRIES = max(0, int(os.environ.get("NOTION_MAX_RETRIES", "5")))
+
+# === Run limit ===
+# Optional cap on how many attendees to process in one run (for safe test
+# batches). 0 / unset means no limit (sync everyone). Overridable via env.
+MAX_CONTACTS = int(os.environ.get("MAX_CONTACTS", "0"))
 
 # === Notion property names (must match the Contacts DB column names exactly) ===
 PROP_NAME = "Name"

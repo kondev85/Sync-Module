@@ -149,8 +149,13 @@ def run() -> None:
         print(f"[notion] {exc}")
         return
 
+    limit = config.MAX_CONTACTS or None
+    if limit:
+        print(f"Test mode: stopping after {limit} attendees.")
+
     end_cursor: str | None = None
     page_num = 0
+    processed = 0
     totals = {"created": 0, "updated": 0, "error": 0}
     total_count: int | None = None
 
@@ -170,6 +175,7 @@ def run() -> None:
         nodes = people.get("nodes") or []
         print(f"Page {page_num}: processing {len(nodes)} attendees")
 
+        reached_limit = False
         for node in nodes:
             try:
                 contact = map_node(node)
@@ -179,6 +185,14 @@ def run() -> None:
                 continue
             status = notion_sync.sync_contact(contact)
             totals[status] = totals.get(status, 0) + 1
+            processed += 1
+            if limit and processed >= limit:
+                print(f"  reached test limit of {limit} attendees.")
+                reached_limit = True
+                break
+
+        if reached_limit:
+            break
 
         page_info = people.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):

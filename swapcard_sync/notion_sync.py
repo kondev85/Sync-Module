@@ -19,6 +19,58 @@ def _headers() -> dict:
     }
 
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (seconds form) into a non-negative float.
+
+    Notion sends integer seconds; if a proxy returns an HTTP-date or anything
+    non-numeric we can't cheaply interpret, return None so the caller falls back
+    to the configured default wait instead of crashing.
+    """
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _notion_request(
+    method: str,
+    url: str,
+    json_body: dict | None = None,
+    idempotent: bool = True,
+) -> requests.Response:
+    """Issue a Notion API call, retrying on rate limits (429) and transient 5xx.
+
+    Honors the Retry-After header on 429 and uses exponential backoff on 5xx.
+    429s are always safe to retry (the request was rejected, not processed). 5xx
+    is only retried for idempotent calls: a non-idempotent create could have
+    succeeded server-side before the error, so blindly retrying would duplicate.
+    Returns the final response; the caller still calls raise_for_status().
+    """
+    resp = None
+    for attempt in range(config.NOTION_MAX_RETRIES + 1):
+        resp = requests.request(
+            method, url, headers=_headers(), json=json_body,
+            timeout=config.REQUEST_TIMEOUT,
+        )
+        if attempt < config.NOTION_MAX_RETRIES:
+            if resp.status_code == 429:
+                wait = _parse_retry_after(resp.headers.get("Retry-After"))
+                if wait is None:
+                    wait = config.NOTION_RETRY_WAIT
+                print(f"  [notion] rate limited; waiting {wait:.1f}s then retrying")
+                time.sleep(wait)
+                continue
+            if resp.status_code >= 500 and idempotent:
+                wait = config.NOTION_RETRY_WAIT * (2 ** attempt)
+                print(f"  [notion] server error {resp.status_code}; retrying in {wait:.1f}s")
+                time.sleep(wait)
+                continue
+        break
+    return resp
+
+
 def _rich_text(value) -> list:
     """Build a Notion rich_text array, respecting the 2000-char block limit.
 
@@ -51,7 +103,7 @@ def get_schema() -> dict:
     global _schema_cache
     if _schema_cache is None:
         url = f"{config.NOTION_API_URL}/databases/{config.NOTION_DATABASE_ID}"
-        resp = requests.get(url, headers=_headers(), timeout=config.REQUEST_TIMEOUT)
+        resp = _notion_request("GET", url)
         resp.raise_for_status()
         props = resp.json().get("properties", {})
         _schema_cache = {name: meta.get("type") for name, meta in props.items()}
@@ -130,9 +182,7 @@ def find_existing(name: str | None) -> str | None:
         "filter": {"property": config.PROP_NAME, "title": {"equals": name}},
         "page_size": 1,
     }
-    resp = requests.post(
-        url, headers=_headers(), json=body, timeout=config.REQUEST_TIMEOUT
-    )
+    resp = _notion_request("POST", url, body)
     resp.raise_for_status()
     results = resp.json().get("results", [])
     return results[0]["id"] if results else None
@@ -144,9 +194,7 @@ def create_contact(contact: dict) -> dict:
         "parent": {"database_id": config.NOTION_DATABASE_ID},
         "properties": build_properties(contact),
     }
-    resp = requests.post(
-        url, headers=_headers(), json=payload, timeout=config.REQUEST_TIMEOUT
-    )
+    resp = _notion_request("POST", url, payload, idempotent=False)
     resp.raise_for_status()
     return resp.json()
 
@@ -154,9 +202,7 @@ def create_contact(contact: dict) -> dict:
 def update_contact(page_id: str, contact: dict) -> dict:
     url = f"{config.NOTION_API_URL}/pages/{page_id}"
     payload = {"properties": build_properties(contact)}
-    resp = requests.patch(
-        url, headers=_headers(), json=payload, timeout=config.REQUEST_TIMEOUT
-    )
+    resp = _notion_request("PATCH", url, payload)
     resp.raise_for_status()
     return resp.json()
 
