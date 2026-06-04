@@ -50,8 +50,13 @@ query GetEventPeople($viewId: ID!, $after: String, $searchable: String) {
 
 
 def _swapcard_headers() -> dict:
+    # Tolerate a token pasted with the "Bearer " prefix already included so we
+    # don't end up sending "Authorization: Bearer Bearer <token>".
+    token = (config.SWAPCARD_BEARER_TOKEN or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[len("bearer "):].strip()
     headers = {
-        "Authorization": f"Bearer {config.SWAPCARD_BEARER_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
