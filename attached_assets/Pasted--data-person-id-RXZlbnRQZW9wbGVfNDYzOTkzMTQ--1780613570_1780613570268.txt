@@ -1,0 +1,369 @@
+{
+        "data": {
+            "person": {
+                "id": "RXZlbnRQZW9wbGVfNDYzOTkzMTQ=",
+                "userId": "VXNlcl8xODU3MjA3",
+                "firstName": "Rami",
+                "lastName": "Yermiya",
+                "photoUrl": "https://static.swapcard.com/public/images/7f5d0f48776c43ff9670360ea9dc1d8b.jpeg",
+                "jobTitle": "President",
+                "organization": "Dignotion",
+                "biography": null,
+                "email": null,
+                "websiteUrl": "https://www.dignotion.com",
+                "hasPendingChanges": null,
+                "address": null,
+                "userInfo": {
+                    "id": "VXNlcl8xODU3MjA3",
+                    "hasReceivedRequest": false,
+                    "hasSentRequest": false,
+                    "isUser": true,
+                    "isSelf": false,
+                    "connectionStatus": "NOT_CONNECTED",
+                    "__typename": "Core_UserInfo",
+                    "presenceStatus": "OFFLINE",
+                    "pendingRequests": []
+                },
+                "type": null,
+                "socialNetworks": [
+                    {
+                        "profile": "dignotion",
+                        "type": "TWITTER",
+                        "__typename": "Core_SocialNetwork"
+                    },
+                    {
+                        "profile": "ramiyermiya",
+                        "type": "LINKEDIN",
+                        "__typename": "Core_SocialNetwork"
+                    },
+                    {
+                        "profile": "dignotion",
+                        "type": "INSTAGRAM",
+                        "__typename": "Core_SocialNetwork"
+                    }
+                ],
+                "mobilePhone": null,
+                "landlinePhone": null,
+                "withEvent": {
+                    "pastMeetings": [],
+                    "__typename": "Core_EventPersonWithEvent",
+                    "id": "RXZlbnRQZW9wbGVfNDYzOTkzMTQ=",
+                    "fields": [
+                        {
+                            "section": null,
+                            "__typename": "Core_SelectField",
+                            "selectOptions": [
+                                {
+                                    "value": "student",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "press-media",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "c-level",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "advisor",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "affiliate-marketing",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "it-technical",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "operations",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "marketing-digital-content-management-agency",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "sales-business-development-account-management",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "board-founder-owner-director-investor",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "professional-services-hr-audit-legal-consultancy-agency",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "finance-and-accounting",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "product-development",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "regulation-compliance-risk",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "recruitment",
+                                    "__typename": "Core_SelectOptionsValue"
+                                }
+                            ],
+                            "definition": {
+                                "id": "RmllbGREZWZpbml0aW9uXzg2OTE5Mw==",
+                                "name": "Job Function",
+                                "placeholder": null,
+                                "isEditable": false,
+                                "selectOptions": [
+                                    {
+                                        "value": "student",
+                                        "text": "Student",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "press-media",
+                                        "text": "Press / Media",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "c-level",
+                                        "text": "C-Level",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "advisor",
+                                        "text": "Advisor",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "affiliate-marketing",
+                                        "text": "Affiliate Marketing",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "it-technical",
+                                        "text": "IT / Technical",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "operations",
+                                        "text": "Operations",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "marketing-digital-content-management-agency",
+                                        "text": "Marketing (Digital, Content, Management, Agency)",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "sales-business-development-account-management",
+                                        "text": "Sales / Business Development / Account Management",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "board-founder-owner-director-investor",
+                                        "text": "Board / Founder / Owner / Director / Investor",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "professional-services-hr-audit-legal-consultancy-agency",
+                                        "text": "Professional services (HR, Audit, Legal, Consultancy, Agency)",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "finance-and-accounting",
+                                        "text": "Finance & Accounting",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "product-development",
+                                        "text": "Product development",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "regulation-compliance-risk",
+                                        "text": "Regulation / Compliance / Risk",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "recruitment",
+                                        "text": "Recruitment",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    }
+                                ],
+                                "section": null,
+                                "__typename": "Core_SelectFieldDefinition"
+                            },
+                            "value": {
+                                "id": "RmllbGRWYWx1ZV8zMDI5ODk4MA==",
+                                "value": "c-level",
+                                "text": "C-Level",
+                                "__typename": "Core_SelectFieldValue"
+                            }
+                        },
+                        {
+                            "section": null,
+                            "__typename": "Core_MultipleSelectField",
+                            "selectOptions": [
+                                {
+                                    "value": "content-forum-sites",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "coupon",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "email",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "paid-media",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "influencer",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "social",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "mobile-apps",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "review-sites",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "news-and-media",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "loyalty-or-cashback-sites",
+                                    "__typename": "Core_SelectOptionsValue"
+                                }
+                            ],
+                            "definition": {
+                                "id": "RmllbGREZWZpbml0aW9uXzg2OTE5Ng==",
+                                "name": "Affiliate Type",
+                                "placeholder": null,
+                                "isEditable": false,
+                                "maxChoices": null,
+                                "selectOptions": [
+                                    {
+                                        "value": "content-forum-sites",
+                                        "text": "Content / Forum Sites",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "coupon",
+                                        "text": "Coupon",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "email",
+                                        "text": "Email",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "paid-media",
+                                        "text": "Paid Media",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "influencer",
+                                        "text": "Influencer",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "social",
+                                        "text": "Social",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "mobile-apps",
+                                        "text": "Mobile Apps",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "review-sites",
+                                        "text": "Review Sites",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "news-and-media",
+                                        "text": "News & Media",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    },
+                                    {
+                                        "value": "loyalty-or-cashback-sites",
+                                        "text": "Loyalty or Cashback Sites",
+                                        "__typename": "Core_SelectOptionsValue"
+                                    }
+                                ],
+                                "section": null,
+                                "__typename": "Core_MultipleSelectFieldDefinition"
+                            },
+                            "values": [
+                                {
+                                    "id": "RmllbGRWYWx1ZV8zMDMzNjA5OQ==",
+                                    "value": "paid-media",
+                                    "text": "Paid Media",
+                                    "__typename": "Core_SelectFieldValue"
+                                },
+                                {
+                                    "id": "RmllbGRWYWx1ZV8zMDMzNjEwOA==",
+                                    "value": "social",
+                                    "text": "Social",
+                                    "__typename": "Core_SelectFieldValue"
+                                },
+                                {
+                                    "id": "RmllbGRWYWx1ZV8zMDMzNjE2Mw==",
+                                    "value": "review-sites",
+                                    "text": "Review Sites",
+                                    "__typename": "Core_SelectFieldValue"
+                                },
+                                {
+                                    "id": "RmllbGRWYWx1ZV8zMDMzNjE2NA==",
+                                    "value": "news-and-media",
+                                    "text": "News & Media",
+                                    "__typename": "Core_SelectFieldValue"
+                                }
+                            ]
+                        },
+                        {
+                            "section": null,
+                            "__typename": "Core_MultipleSelectField",
+                            "selectOptions": [
+                                {
+                                    "value": "sports-betting",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "fantasy-sports",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "esports",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "casino-and-games",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "bingo",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
+                                {
+                                    "value": "other-non-gaming",
+                                    "__typename": "Core_SelectOptionsValue"
+                                },
