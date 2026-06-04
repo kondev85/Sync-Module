@@ -27,6 +27,60 @@ def _swapcard_headers() -> dict:
     return headers
 
 
+def _swapcard_post(payload: list, context: str) -> dict:
+    """POST a batched Swapcard GraphQL request with retry/backoff.
+
+    Retries 429 (honoring Retry-After) and 5xx / timeouts with bounded
+    exponential backoff, then returns the first batch entry (a dict). Raises on
+    exhausted retries, non-retryable HTTP errors, or an unexpected batch shape.
+    GraphQL-level `errors` are left for the caller to interpret.
+    """
+    attempt = 0
+    while True:
+        try:
+            resp = requests.post(
+                config.SWAPCARD_GRAPHQL_URL,
+                headers=_swapcard_headers(),
+                json=payload,
+                timeout=config.REQUEST_TIMEOUT,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt >= config.SWAPCARD_MAX_RETRIES:
+                raise
+            wait = config.SWAPCARD_RETRY_WAIT * (2**attempt)
+            print(f"  [swapcard] {context}: {exc.__class__.__name__}, "
+                  f"retry {attempt + 1}/{config.SWAPCARD_MAX_RETRIES} in {wait:.1f}s")
+            time.sleep(wait)
+            attempt += 1
+            continue
+
+        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+            if attempt >= config.SWAPCARD_MAX_RETRIES:
+                resp.raise_for_status()
+            if resp.status_code == 429:
+                header = resp.headers.get("Retry-After")
+                try:
+                    wait = float(header) if header is not None else config.SWAPCARD_RETRY_WAIT
+                except ValueError:
+                    wait = config.SWAPCARD_RETRY_WAIT
+            else:
+                wait = config.SWAPCARD_RETRY_WAIT * (2**attempt)
+            print(f"  [swapcard] {context}: HTTP {resp.status_code}, "
+                  f"retry {attempt + 1}/{config.SWAPCARD_MAX_RETRIES} in {wait:.1f}s")
+            time.sleep(wait)
+            attempt += 1
+            continue
+
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+            raise RuntimeError(
+                f"Unexpected Swapcard response for {context} "
+                f"(expected a batch list of objects): {str(data)[:200]}"
+            )
+        return data[0]
+
+
 def fetch_page(end_cursor: str | None) -> dict:
     """Fetch one page of attendees via Swapcard's persisted (APQ) query.
 
@@ -51,25 +105,7 @@ def fetch_page(end_cursor: str | None) -> dict:
             },
         }
     ]
-    resp = requests.post(
-        config.SWAPCARD_GRAPHQL_URL,
-        headers=_swapcard_headers(),
-        json=payload,
-        timeout=config.REQUEST_TIMEOUT,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Batched response: a list with one entry per operation.
-    if not isinstance(data, list) or not data:
-        raise RuntimeError(
-            f"Unexpected Swapcard response (expected a batch list): {str(data)[:200]}"
-        )
-    entry = data[0]
-    if not isinstance(entry, dict):
-        raise RuntimeError(
-            f"Unexpected Swapcard batch entry (expected an object): {str(entry)[:200]}"
-        )
+    entry = _swapcard_post(payload, context="people list")
 
     if entry.get("errors"):
         raise RuntimeError(
@@ -110,14 +146,106 @@ def extract_role(node: dict) -> str | None:
     return node.get("jobTitle")
 
 
-def extract_linkedin(node: dict) -> str | None:
-    """Find the LinkedIn URL inside the socialNetworks array."""
-    for network in node.get("socialNetworks") or []:
+def linkedin_url(profile: str | None) -> str | None:
+    """Normalize a Swapcard LinkedIn value into a full profile URL.
+
+    Swapcard stores just the handle (e.g. "ramiyermiya"); we expand it to
+    https://www.linkedin.com/in/ramiyermiya. Already-full URLs pass through, and
+    common prefixes ("/", "in/", "linkedin.com/...") are handled.
+    """
+    if not profile:
+        return None
+    p = str(profile).strip()
+    if not p:
+        return None
+    low = p.lower()
+    # Already a full URL (scheme check is case-insensitive) — pass through as-is.
+    if low.startswith("http://") or low.startswith("https://"):
+        return p
+    p = p.lstrip("/")
+    low = p.lower()
+    # Bare domain without scheme, e.g. "linkedin.com/in/foo".
+    if low.startswith("linkedin.com") or low.startswith("www.linkedin.com"):
+        return "https://" + p
+    # An explicit LinkedIn path segment ("in/", "company/", "school/", "pub/"):
+    # keep the path verbatim rather than forcing it under "/in/".
+    if "/" in p and low.split("/", 1)[0] in ("in", "company", "school", "pub"):
+        if not p.split("/", 1)[1].strip("/"):
+            return None
+        return f"https://www.linkedin.com/{p}"
+    # Otherwise treat it as a bare personal handle.
+    handle = p.strip("/")
+    if not handle:
+        return None
+    return f"https://www.linkedin.com/in/{handle}"
+
+
+def extract_linkedin(social_networks: list | None) -> str | None:
+    """Return a formatted LinkedIn URL from a socialNetworks array, if present."""
+    for network in social_networks or []:
         if (network.get("type") or "").upper() == "LINKEDIN":
-            link = network.get("link")
-            if link:
-                return link
+            return linkedin_url(network.get("profile") or network.get("link"))
     return None
+
+
+def fetch_person_detail(person_id: str, user_id: str | None) -> dict:
+    """Fetch one attendee's full profile via the persisted detail query.
+
+    Returns the `person` object (jobTitle, socialNetworks, biography, ...).
+    """
+    payload = [
+        {
+            "operationName": config.SWAPCARD_DETAIL_OPERATION_NAME,
+            "variables": {
+                "skipMeetings": False,
+                "withEvent": True,
+                "withHostedBuyerView": False,
+                "personId": person_id,
+                "userId": user_id or "",
+                "eventId": config.SWAPCARD_EVENT_ID,
+                "viewId": "",
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": config.SWAPCARD_DETAIL_PERSISTED_QUERY_HASH,
+                }
+            },
+        }
+    ]
+    entry = _swapcard_post(payload, context="person detail")
+    if entry.get("errors"):
+        raise RuntimeError(
+            f"Swapcard detail GraphQL errors: {entry['errors']}. "
+            "If PersistedQueryNotFound, re-capture "
+            "SWAPCARD_DETAIL_PERSISTED_QUERY_HASH from the browser."
+        )
+    return (entry.get("data") or {}).get("person") or {}
+
+
+def enrich_contact(contact: dict, node: dict) -> None:
+    """Fetch the attendee's profile and fill Role / LinkedIn / Notes in place.
+
+    Failures are non-fatal: the contact keeps its list-derived values so a single
+    profile fetch error never drops the row.
+    """
+    person_id = node.get("id")
+    if not person_id:
+        return
+    try:
+        detail = fetch_person_detail(person_id, node.get("userId"))
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        print(f"  [swapcard] profile fetch failed for {contact['name']!r}: {exc}")
+        return
+    job_title = detail.get("jobTitle")
+    if job_title:
+        contact["role"] = job_title
+    link = extract_linkedin(detail.get("socialNetworks"))
+    if link:
+        contact["linkedin"] = link
+    biography = detail.get("biography")
+    if biography:
+        contact["notes"] = biography
 
 
 def map_node(node: dict) -> dict:
@@ -128,7 +256,7 @@ def map_node(node: dict) -> dict:
         "name": f"{first} {last}".strip(),
         "company": node.get("organization"),
         "role": extract_role(node),
-        "linkedin": extract_linkedin(node),
+        "linkedin": extract_linkedin(node.get("socialNetworks")),
         "notes": node.get("biography"),
     }
 
@@ -175,6 +303,23 @@ def run() -> None:
         nodes = people.get("nodes") or []
         print(f"Page {page_num}: processing {len(nodes)} attendees")
 
+        # One-time probe: if enrichment is on, confirm the detail query actually
+        # works before grinding through thousands of rows. A misconfigured
+        # event id / stale hash would otherwise silently blank Role+LinkedIn for
+        # everyone (enrich failures are non-fatal per row).
+        if page_num == 1 and config.ENRICH_PROFILES and nodes:
+            probe = nodes[0]
+            try:
+                fetch_person_detail(probe.get("id"), probe.get("userId"))
+            except (requests.RequestException, RuntimeError, ValueError) as exc:
+                print(
+                    "[swapcard] WARNING: profile enrichment probe failed — "
+                    "Role/LinkedIn/Notes may be blank for every row.\n"
+                    f"  {exc}\n"
+                    "  Check SWAPCARD_EVENT_ID and SWAPCARD_DETAIL_PERSISTED_QUERY_HASH, "
+                    "or set ENRICH_PROFILES=0 to skip enrichment."
+                )
+
         reached_limit = False
         for node in nodes:
             try:
@@ -183,6 +328,8 @@ def run() -> None:
                 print(f"  [map] skipping malformed attendee: {exc}")
                 totals["error"] += 1
                 continue
+            if config.ENRICH_PROFILES:
+                enrich_contact(contact, node)
             status = notion_sync.sync_contact(contact)
             totals[status] = totals.get(status, 0) + 1
             processed += 1

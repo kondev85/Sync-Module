@@ -31,6 +31,27 @@ SWAPCARD_PERSISTED_QUERY_HASH = os.environ.get(
     "c5db6335ec685ffb07963360466f639262d04d8c5cbaa89e5f5992ee20bb6579",
 )
 
+# Per-attendee profile (detail) query. The list cards omit jobTitle and
+# socialNetworks, so we call this persisted query once per person to enrich Role
+# + LinkedIn (+ biography). Same APQ mechanism; hash rotates on Swapcard
+# redeploys, so all of these are env-overridable.
+SWAPCARD_EVENT_ID = os.environ.get("SWAPCARD_EVENT_ID", "RXZlbnRfNDM5NTcyNw==")
+SWAPCARD_DETAIL_OPERATION_NAME = os.environ.get(
+    "SWAPCARD_DETAIL_OPERATION_NAME", "EventPersonDetailsQuery"
+)
+SWAPCARD_DETAIL_PERSISTED_QUERY_HASH = os.environ.get(
+    "SWAPCARD_DETAIL_PERSISTED_QUERY_HASH",
+    "7b56a396195a35eea892cd3c8a4aab3e0aa705042b314674375dc8abde6b5f30",
+)
+# Fetch each attendee's full profile? Adds one request per attendee but fills
+# Role + LinkedIn + bio. Set ENRICH_PROFILES=0 for a faster name+company-only run.
+ENRICH_PROFILES = os.environ.get("ENRICH_PROFILES", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "",
+)
+
 # === Notion API ===
 NOTION_API_URL = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
@@ -49,6 +70,11 @@ REQUEST_TIMEOUT = 30  # seconds
 # exponential backoff on 5xx.
 NOTION_RETRY_WAIT = max(0.0, float(os.environ.get("NOTION_RETRY_WAIT", "2.0")))
 NOTION_MAX_RETRIES = max(0, int(os.environ.get("NOTION_MAX_RETRIES", "5")))
+# Same idea for Swapcard. With profile enrichment on, a full run makes ~1 detail
+# call per attendee (thousands), so transient 429/5xx must be retried instead of
+# silently dropping that row's Role/LinkedIn.
+SWAPCARD_RETRY_WAIT = max(0.0, float(os.environ.get("SWAPCARD_RETRY_WAIT", "2.0")))
+SWAPCARD_MAX_RETRIES = max(0, int(os.environ.get("SWAPCARD_MAX_RETRIES", "5")))
 
 # === Run limit ===
 # Optional cap on how many attendees to process in one run (for safe test
