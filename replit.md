@@ -4,6 +4,22 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Run & Operate
 
+### Swapcard → Notion sync (the real app: `swapcard_sync/`)
+
+Run from a **Shell tab** (foreground), not from the Agent — the Agent sandbox kills long-running processes after ~120s. A full ~5000-attendee run takes 1–2 hours.
+
+- Full run (recommended pacing): `cd swapcard_sync && ENRICH_PROFILES=1 ROW_INSERT_INTERVAL=0.6 python -u main.py`
+- Resume after an interruption: add `SKIP_CONTACTS=<last index shown in logs minus ~20>` — a small overlap is safe (dedup updates, never duplicates) and avoids gaps if Swapcard's list order drifted.
+- Finish with one final full pass (`SKIP_CONTACTS=0`, no `MAX_CONTACTS`) to catch any attendees missed at chunk boundaries; it only updates existing rows.
+- Test a chunk: `SKIP_CONTACTS=0 MAX_CONTACTS=50 ENRICH_PROFILES=1 python -u main.py`
+- Required secrets: `SWAPCARD_BEARER_TOKEN`, `SWAPCARD_COOKIE`, `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`.
+
+Key env toggles (see `config.py`): `ENRICH_PROFILES` (Role/LinkedIn/Notes), `SKIP_CONTACTS` (resume offset), `MAX_CONTACTS` (cap), `ROW_INSERT_INTERVAL`, `PAGE_DELAY_MIN/MAX`.
+
+Dedup is by **Name**: re-running never creates duplicates (it updates the existing row), so restarts and overlapping chunks are safe.
+
+### Scaffold commands (unused template — api-server/db)
+
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages

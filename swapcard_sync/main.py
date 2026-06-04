@@ -341,6 +341,9 @@ def run() -> None:
             status = notion_sync.sync_contact(contact)
             totals[status] = totals.get(status, 0) + 1
             processed += 1
+            # Absolute index (`seen`) doubles as the resume offset: if the run is
+            # interrupted, re-run with SKIP_CONTACTS set to the last index shown.
+            print(f"  [{seen}] {status:8} {(contact['name'] or '(no name)')[:45]}")
             if limit and processed >= limit:
                 print(f"  reached test limit of {limit} attendees.")
                 reached_limit = True
