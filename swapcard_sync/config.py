@@ -16,8 +16,20 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 SWAPCARD_GRAPHQL_URL = "https://api.swapcard.com/graphql"
 # The event view to scrape. Overridable via env, defaults to the provided view.
 SWAPCARD_VIEW_ID = os.environ.get("SWAPCARD_VIEW_ID", "RXZlbnRWaWV3XzEyNjYyNzU=")
-# Attendees fetched per pagination request. Keep modest to stay polite.
-PAGE_SIZE = int(os.environ.get("SWAPCARD_PAGE_SIZE", "50"))
+
+# Swapcard serves the people list via a *persisted* GraphQL query (APQ): the
+# client sends only an operation name + sha256 hash, and the server resolves the
+# registered query. Both are overridable via env so they can be refreshed if
+# Swapcard redeploys their web client (which rotates the hash) without a code
+# change. Re-capture from the browser's Network tab if requests start 400ing
+# with "PersistedQueryNotFound".
+SWAPCARD_OPERATION_NAME = os.environ.get(
+    "SWAPCARD_OPERATION_NAME", "EventPeopleListViewConnectionQuery"
+)
+SWAPCARD_PERSISTED_QUERY_HASH = os.environ.get(
+    "SWAPCARD_PERSISTED_QUERY_HASH",
+    "c5db6335ec685ffb07963360466f639262d04d8c5cbaa89e5f5992ee20bb6579",
+)
 
 # === Notion API ===
 NOTION_API_URL = "https://api.notion.com/v1"

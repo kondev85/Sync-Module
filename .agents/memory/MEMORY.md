@@ -1,0 +1,1 @@
+- [Swapcard people API](swapcard-people-api.md) — introspection off; people list served via persisted GraphQL query (rotating hash, batched array), capture op+hash from browser, not raw queries.
