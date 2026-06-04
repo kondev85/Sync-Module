@@ -97,7 +97,7 @@ def extract_role(node: dict) -> str | None:
         if name in config.JOB_TITLE_FIELD_NAMES:
             value = field.get("value")
             if value:
-                return value
+                return value if isinstance(value, str) else str(value)
     return node.get("jobTitle")
 
 
@@ -157,9 +157,13 @@ def run() -> None:
         page_info = people.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             break
-        after = page_info.get("endCursor")
-        if not after:
+        next_cursor = page_info.get("endCursor")
+        # Guard against a missing or non-advancing cursor, which would
+        # otherwise re-fetch the same page forever.
+        if not next_cursor or next_cursor == after:
+            print("  [swapcard] cursor did not advance; stopping to avoid a loop.")
             break
+        after = next_cursor
 
         # Humanized pause between pagination requests.
         delay = random.uniform(config.PAGE_DELAY_MIN, config.PAGE_DELAY_MAX)

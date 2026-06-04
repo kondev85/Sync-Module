@@ -19,11 +19,18 @@ def _headers() -> dict:
     }
 
 
-def _rich_text(value: str | None) -> list:
-    """Build a Notion rich_text array, respecting the 2000-char block limit."""
-    if not value:
+def _rich_text(value) -> list:
+    """Build a Notion rich_text array, respecting the 2000-char block limit.
+
+    Coerces non-string values to str so an unexpected field shape (e.g. a
+    number or list coming back from Swapcard) never crashes payload building.
+    """
+    if value is None or value == "":
         return []
-    return [{"type": "text", "text": {"content": value[:2000]}}]
+    text = value if isinstance(value, str) else str(value)
+    if not text:
+        return []
+    return [{"type": "text", "text": {"content": text[:2000]}}]
 
 
 def build_properties(contact: dict) -> dict:
@@ -37,7 +44,7 @@ def build_properties(contact: dict) -> dict:
     }
     linkedin = contact.get("linkedin")
     if linkedin:
-        properties[config.PROP_LINKEDIN] = {"url": linkedin}
+        properties[config.PROP_LINKEDIN] = {"url": str(linkedin)}
     return properties
 
 
@@ -101,6 +108,8 @@ def sync_contact(contact: dict) -> str:
         if exc.response is not None:
             detail = f" ({exc.response.status_code}: {exc.response.text[:200]})"
         print(f"  [notion] error syncing '{name}': {exc}{detail}")
+    except Exception as exc:  # one bad attendee must not abort the whole run
+        print(f"  [notion] unexpected error syncing '{name}': {exc}")
     finally:
         # Respect Notion's structural API thresholds between row insertions.
         time.sleep(config.ROW_INSERT_INTERVAL)
