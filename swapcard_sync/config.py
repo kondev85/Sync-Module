@@ -61,7 +61,7 @@ NOTION_VERSION = "2022-06-28"
 PAGE_DELAY_MIN = float(os.environ.get("PAGE_DELAY_MIN", "1.5"))
 PAGE_DELAY_MAX = float(os.environ.get("PAGE_DELAY_MAX", "4.0"))
 # Fixed interval between individual Notion row insertions (seconds).
-ROW_INSERT_INTERVAL = 0.3
+ROW_INSERT_INTERVAL = max(0.0, float(os.environ.get("ROW_INSERT_INTERVAL", "0.3")))
 
 # === Network ===
 REQUEST_TIMEOUT = 30  # seconds
@@ -80,6 +80,10 @@ SWAPCARD_MAX_RETRIES = max(0, int(os.environ.get("SWAPCARD_MAX_RETRIES", "5")))
 # Optional cap on how many attendees to process in one run (for safe test
 # batches). 0 / unset means no limit (sync everyone). Overridable via env.
 MAX_CONTACTS = int(os.environ.get("MAX_CONTACTS", "0"))
+# Optional offset: skip the first N attendees (in list order) before processing.
+# Lets a run be split into chunks (e.g. SKIP_CONTACTS=60 MAX_CONTACTS=40 handles
+# rows 61-100) so a long enriched run can complete within tight time limits.
+SKIP_CONTACTS = max(0, int(os.environ.get("SKIP_CONTACTS", "0")))
 
 # === Notion property names (must match the Contacts DB column names exactly) ===
 PROP_NAME = "Name"

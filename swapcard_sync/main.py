@@ -280,9 +280,13 @@ def run() -> None:
     limit = config.MAX_CONTACTS or None
     if limit:
         print(f"Test mode: stopping after {limit} attendees.")
+    skip = config.SKIP_CONTACTS
+    if skip:
+        print(f"Skipping the first {skip} attendees (resume/chunk offset).")
 
     end_cursor: str | None = None
     page_num = 0
+    seen = 0
     processed = 0
     totals = {"created": 0, "updated": 0, "error": 0}
     total_count: int | None = None
@@ -322,6 +326,10 @@ def run() -> None:
 
         reached_limit = False
         for node in nodes:
+            if seen < skip:
+                seen += 1
+                continue
+            seen += 1
             try:
                 contact = map_node(node)
             except Exception as exc:  # noqa: BLE001 - one bad node must not abort the page
