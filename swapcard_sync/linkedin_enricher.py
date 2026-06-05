@@ -107,7 +107,10 @@ def google_search(name: str, company: str) -> str | None:
     """Search Google for the contact's LinkedIn /in/ profile; return first match.
 
     Returns the first result URL that contains 'linkedin.com/in/', or None if
-    the search returns no usable result.
+    none of the results do. We scan results in order rather than only the very
+    first item: even with a `site:linkedin.com/in/` query, the top hit can
+    occasionally be a non-/in/ URL (e.g. a /pub/ or company link), so we take
+    the first genuine profile match.
     """
     query = f'"{name}" "{company}" site:linkedin.com/in/'
     params = {
@@ -122,11 +125,10 @@ def google_search(name: str, company: str) -> str | None:
     )
     resp.raise_for_status()
     items = resp.json().get("items") or []
-    if not items:
-        return None
-    link = items[0].get("link")
-    if link and "linkedin.com/in/" in link:
-        return link
+    for item in items:
+        link = item.get("link")
+        if link and "linkedin.com/in/" in link:
+            return link
     return None
 
 

@@ -8,6 +8,8 @@ _Replace the heading above with the project's name, and this line with one sente
 
 Run from a **Shell tab** (foreground), not from the Agent — the Agent sandbox kills long-running processes after ~120s. A full ~5000-attendee run takes 1–2 hours.
 
+`python -u main.py` now shows an interactive menu: **[1]** Scraper & Sync, **[2]** Missing LinkedIn Finder & Enricher. For scripted/non-interactive runs, set `RUN_MODE=scraper` or `RUN_MODE=enricher` to skip the menu (the run commands below all run interactively — just press `1`, or prepend `RUN_MODE=scraper`).
+
 - Full run (recommended pacing): `cd swapcard_sync && ENRICH_PROFILES=1 ROW_INSERT_INTERVAL=0.6 python -u main.py`
 - Resume after an interruption: add `SKIP_CONTACTS=<last index shown in logs minus ~20>` — a small overlap is safe (dedup updates, never duplicates) and avoids gaps if Swapcard's list order drifted.
 - Finish with one final full pass (`SKIP_CONTACTS=0`, no `MAX_CONTACTS`) to catch any attendees missed at chunk boundaries; it only updates existing rows.
@@ -17,6 +19,15 @@ Run from a **Shell tab** (foreground), not from the Agent — the Agent sandbox 
 Key env toggles (see `config.py`): `ENRICH_PROFILES` (Role/LinkedIn/Notes), `SKIP_CONTACTS` (resume offset), `MAX_CONTACTS` (cap), `ROW_INSERT_INTERVAL`, `PAGE_DELAY_MIN/MAX`.
 
 Dedup is by **Name**: re-running never creates duplicates (it updates the existing row), so restarts and overlapping chunks are safe.
+
+### LinkedIn enricher (`swapcard_sync/linkedin_enricher.py`)
+
+Separate from the scraper but unified in the same project: finds Notion rows with an empty **LinkedIn** and fills them by Googling `"Name" "Company" site:linkedin.com/in/` via the Google Custom Search JSON API. Only searches rows that have **both** Name and Company.
+
+- Run it: menu option **[2]**, or `cd swapcard_sync && RUN_MODE=enricher python -u main.py`.
+- Required secrets: `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`, `GOOGLE_API_KEY`, `GOOGLE_CSE_ID`.
+- **Google setup (one-time):** the API key's Cloud project must have **Custom Search API enabled**, and the Programmable Search Engine (`cx` = `GOOGLE_CSE_ID`) must have **"Search the entire web" ON** — otherwise `site:` queries return nothing. A 403 `"This project does not have the access to Custom Search JSON API"` means the API isn't enabled yet.
+- Quota guardrail: hard cap of `MAX_LOOKUPS` lookups/run (default **95**, under Google's 100/day free limit). Re-run on later days to continue. `GOOGLE_LOOKUP_INTERVAL` (default 1.0s) paces requests. A name+company match is a best guess, not a verified identity.
 
 ### Scaffold commands (unused template — api-server/db)
 

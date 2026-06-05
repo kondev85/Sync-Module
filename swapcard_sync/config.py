@@ -92,6 +92,12 @@ MAX_CONTACTS = int(os.environ.get("MAX_CONTACTS", "0"))
 # rows 61-100) so a long enriched run can complete within tight time limits.
 SKIP_CONTACTS = max(0, int(os.environ.get("SKIP_CONTACTS", "0")))
 
+# === Entry mode ===
+# Skip main.py's interactive menu for scripted/non-interactive runs. Set
+# RUN_MODE=scraper or RUN_MODE=enricher to run that job directly (e.g. piped
+# commands, cron). Unset = show the [1]/[2] menu.
+RUN_MODE = os.environ.get("RUN_MODE", "").strip().lower()
+
 # === LinkedIn enricher (Google CSE) ===
 # Hard stop after this many Google lookups per run. Defaults to 95 to stay under
 # Google's 100/day free quota with headroom; override via env for paid quota.

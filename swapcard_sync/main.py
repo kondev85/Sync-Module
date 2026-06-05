@@ -376,7 +376,18 @@ def run() -> None:
 
 
 def main() -> None:
-    """Present a simple CLI menu to pick which job to run."""
+    """Present a simple CLI menu to pick which job to run.
+
+    Honors RUN_MODE (scraper/enricher) for non-interactive/scripted runs so the
+    documented `python -u main.py` command paths keep working without a TTY.
+    """
+    if config.RUN_MODE in ("1", "scraper", "swapcard"):
+        run()
+        return
+    if config.RUN_MODE in ("2", "enricher", "linkedin"):
+        linkedin_enricher.run()
+        return
+
     print("=" * 60)
     print("  iGB Live — Contact Tools")
     print("=" * 60)
@@ -387,7 +398,8 @@ def main() -> None:
     try:
         choice = input("Select an option [1/2]: ").strip()
     except (EOFError, KeyboardInterrupt):
-        print("\nNo selection made. Exiting.")
+        print("\nNo selection made. Exiting. "
+              "(Tip: set RUN_MODE=scraper or RUN_MODE=enricher for non-interactive runs.)")
         return
 
     if choice == "1":
