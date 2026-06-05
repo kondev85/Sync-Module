@@ -12,6 +12,13 @@ SWAPCARD_COOKIE = os.environ.get("SWAPCARD_COOKIE")
 NOTION_API_TOKEN = os.environ.get("NOTION_API_TOKEN")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
+# Google Programmable Search (Custom Search JSON API) — used by the LinkedIn
+# enricher. GOOGLE_API_KEY is a Cloud API key with "Custom Search API" enabled;
+# GOOGLE_CSE_ID is the search engine's `cx` value. The engine must have
+# "Search the entire web" turned ON or site: queries return nothing.
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")
+
 # === Swapcard GraphQL API ===
 SWAPCARD_GRAPHQL_URL = "https://api.swapcard.com/graphql"
 # The event view to scrape. Overridable via env, defaults to the provided view.
@@ -84,6 +91,13 @@ MAX_CONTACTS = int(os.environ.get("MAX_CONTACTS", "0"))
 # Lets a run be split into chunks (e.g. SKIP_CONTACTS=60 MAX_CONTACTS=40 handles
 # rows 61-100) so a long enriched run can complete within tight time limits.
 SKIP_CONTACTS = max(0, int(os.environ.get("SKIP_CONTACTS", "0")))
+
+# === LinkedIn enricher (Google CSE) ===
+# Hard stop after this many Google lookups per run. Defaults to 95 to stay under
+# Google's 100/day free quota with headroom; override via env for paid quota.
+MAX_LOOKUPS = max(1, int(os.environ.get("MAX_LOOKUPS", "95")))
+# Pause (seconds) between Google lookups to keep request pacing clean.
+GOOGLE_LOOKUP_INTERVAL = max(0.0, float(os.environ.get("GOOGLE_LOOKUP_INTERVAL", "1.0")))
 
 # === Notion property names (must match the Contacts DB column names exactly) ===
 PROP_NAME = "Name"

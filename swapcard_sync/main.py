@@ -8,6 +8,7 @@ import time
 import requests
 
 import config
+import linkedin_enricher
 import notion_sync
 
 
@@ -374,5 +375,28 @@ def run() -> None:
     print(f"  errors:  {totals['error']}")
 
 
+def main() -> None:
+    """Present a simple CLI menu to pick which job to run."""
+    print("=" * 60)
+    print("  iGB Live — Contact Tools")
+    print("=" * 60)
+    print("  [1] Run iGB Live Event Scraper & Sync")
+    print("  [2] Run Missing LinkedIn Profiles Finder & Enricher")
+    print("-" * 60)
+
+    try:
+        choice = input("Select an option [1/2]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nNo selection made. Exiting.")
+        return
+
+    if choice == "1":
+        run()
+    elif choice == "2":
+        linkedin_enricher.run()
+    else:
+        print(f"Unknown option {choice!r}. Please run again and choose 1 or 2.")
+
+
 if __name__ == "__main__":
-    run()
+    main()
