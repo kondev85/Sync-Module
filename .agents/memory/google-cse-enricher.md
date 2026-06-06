@@ -3,7 +3,13 @@ name: LinkedIn enricher search backend
 description: Why the enricher switched from Google CSE to DuckDuckGo, plus the Google CSE setup gotchas (kept for history)
 ---
 
-**Current state:** the LinkedIn enricher uses **DuckDuckGo** (`ddgs` library) — no API key, no Cloud project, no quota. It just works in this environment. The Google CSE path below was abandoned after repeated 403s the user couldn't resolve even after enabling the API (the key's owning project never lined up with where the API was enabled). DuckDuckGo throttles bursts, so pace with `SEARCH_INTERVAL` (default 2.5s) and cap per run with `MAX_LOOKUPS`. Don't reach back for Google CSE unless DuckDuckGo stops working.
+**Current state:** the LinkedIn enricher uses **DuckDuckGo** (`ddgs` library) — no API key, no Cloud project, no quota. It just works in this environment. The Google CSE path below was abandoned after repeated 403s the user couldn't resolve even after enabling the API (the key's owning project never lined up with where the API was enabled). Don't reach back for Google CSE unless DuckDuckGo stops working.
+
+**DuckDuckGo is loose + flaky — two consequences that drove the design:**
+1. It does NOT strictly honor `"quotes"`/`site:`, so a `site:linkedin.com/in/` query for an unindexed person returns an *unrelated* profile. Writing the top hit blindly produced ~44% wrong matches. Fix: a name-verification guard — accept a result only if BOTH first and last name tokens (accent-folded) appear in the profile's `/in/` slug OR result **title**. Crucially do NOT match against the result **body/snippet**: it echoes the searched company/name, so a different person at the same company passes on a surname that's only in the snippet (real miss: "Ahmet Bulent Zorlu" → profile "Ahmet S. Önal"). 
+2. It throttles bursts and is non-deterministic: the *same* query can raise `DDGSException("No results found.")` one minute and return hits the next. So pace with `SEARCH_INTERVAL` (default 2.5s), cap with `MAX_LOOKUPS`, and treat `RatelimitException`/`TimeoutException` as transient (leave the row for retry) but a plain "no results" as a genuine no-match.
+
+**Enricher idempotency contract:** a Notion multi_select status column (`"LinkedIn Enreacher"` — note the user's spelling; options Yes/No/Skipped) makes outcomes sticky. Found→stamp "Yes"+write URL; no confident match→stamp "Skipped"+leave URL empty. The fetch filter is `LinkedIn is_empty AND status is_empty`, so any stamped row (incl. human-set "No") is never re-searched. Rows missing Name/Company are left unstamped so they retry if data is added. **Why:** without the status stamp, "no-match" rows would be re-searched (and re-fail) every run forever.
 
 ---
 

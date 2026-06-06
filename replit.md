@@ -24,9 +24,12 @@ Dedup is by **Name**: re-running never creates duplicates (it updates the existi
 
 Separate from the scraper but unified in the same project: finds Notion rows with an empty **LinkedIn** and fills them by searching **DuckDuckGo** for `"Name" "Company" site:linkedin.com/in/` (via the `ddgs` library). Only searches rows that have **both** Name and Company.
 
-- Run it: menu option **[2]**, or `cd swapcard_sync && RUN_MODE=enricher python -u main.py`.
+- Run it: menu option **[2]**, or `cd swapcard_sync && RUN_MODE=enricher python -u main.py`. Test a small batch with `MAX_LOOKUPS=10`.
 - Required secrets: `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`. **No Google/search API key needed** — DuckDuckGo needs no credentials or quota project. (The old `GOOGLE_API_KEY`/`GOOGLE_CSE_ID` path was dropped because the Custom Search JSON API kept returning 403 even after enabling.)
-- Rate-limit guardrail: DuckDuckGo has no fixed daily quota but throttles bursts. Hard cap of `MAX_LOOKUPS` searches/run (default **300**); `SEARCH_INTERVAL` (default **2.5s**, falls back to legacy `GOOGLE_LOOKUP_INTERVAL`) paces requests. If you hit rate limits, raise `SEARCH_INTERVAL`. A name+company match is a best guess, not a verified identity.
+- **Never overwrites filled rows:** it only queries rows where `LinkedIn is_empty`, so existing URLs are never touched.
+- **Name-verification guard:** DuckDuckGo loosely honors `"quotes"`/`site:`, so it can return an unrelated profile for an unindexed person. The enricher only writes a result if **both the first and last name appear in the profile's /in/ slug or result title** (never the snippet body, which echoes the searched company). Mismatches are rejected and the row is marked **Skipped** instead of written.
+- **Status column `LinkedIn Enreacher`** (multi_select, options `Yes`/`No`/`Skipped` — note the column's spelling). The enricher stamps **Yes** when it writes a verified URL and **Skipped** when no confident match is found (LinkedIn left empty). Rows already stamped `Yes`/`No`/`Skipped` are **excluded from future runs**, so it never re-searches a person it gave up on (or one a human marked). Rows missing Name/Company are left unstamped so they retry if the data is filled in later. To force a re-try, clear that row's status in Notion.
+- Rate-limit guardrail: DuckDuckGo has no fixed daily quota but throttles bursts (and is flaky run-to-run — an identical query can return "No results" one minute and hits the next). Hard cap of `MAX_LOOKUPS` searches/run (default **300**); `SEARCH_INTERVAL` (default **2.5s**, falls back to legacy `GOOGLE_LOOKUP_INTERVAL`) paces requests. If you hit rate limits, raise `SEARCH_INTERVAL`. A name+company match is a best guess, not a verified identity.
 
 ### Scaffold commands (unused template — api-server/db)
 

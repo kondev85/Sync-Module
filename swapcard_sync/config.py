@@ -122,6 +122,14 @@ PROP_ROLE = "Role"
 PROP_LINKEDIN = "LinkedIn"
 PROP_NOTES = "Notes"
 PROP_IGBLIVE = "iGBLive"
+# Status column the enricher stamps so it never reprocesses a row: "Yes" when a
+# verified profile was written, "Skipped" when no confident match was found
+# (LinkedIn left empty). NOTE: the column name is intentionally spelled to match
+# the existing Notion column ("Enreacher"). Type is multi_select in the live DB,
+# but writers stay type-aware (select/status also handled).
+PROP_LINKEDIN_STATUS = "LinkedIn Enreacher"
+LINKEDIN_STATUS_FOUND = "Yes"
+LINKEDIN_STATUS_SKIPPED = "Skipped"
 
 # Custom-field names to match when locating the job title inside node['fields'].
 # Compared case-insensitively after stripping whitespace.
