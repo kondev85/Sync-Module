@@ -55,6 +55,10 @@ _COMPANY_STOPWORDS = {
     "holding", "holdings", "the", "and", "consulting", "ecommerce", "com", "plc",
     "ag", "sa", "srl", "bv", "oy", "ab", "as", "kft", "solutions", "services",
     "company", "international", "global", "agency", "studio", "media", "digital",
+    # Generic employment statuses — never an identifying employer, so they must
+    # not corroborate a match (otherwise any "self-employed" stranger qualifies).
+    "self", "employed", "employee", "freelance", "freelancer", "freelancing",
+    "independent", "consultant", "contractor", "owner", "founder", "entrepreneur",
 }
 
 
@@ -77,22 +81,62 @@ def _company_variants(company: str) -> list[str]:
     return out
 
 
-def _company_tokens(company: str) -> list[str]:
-    """Identifying company tokens (>=4 chars, minus generic corporate words)."""
-    tokens = re.findall(r"[a-z0-9]+", _strip_accents(company))
-    return [t for t in tokens if len(t) >= 4 and t not in _COMPANY_STOPWORDS]
+def _company_tokens(company: str, min_len: int = 4) -> list[str]:
+    """Identifying company tokens (>=min_len chars, minus generic corporate words).
 
-
-def _company_in_title(company: str, title: str) -> bool:
-    """True if an identifying company token appears in the profile title.
-
-    Used to corroborate a name-only fallback match: it lets us accept a profile
-    found without the company in the query (DuckDuckGo is flaky with quoted
-    company phrases) only when the title independently confirms the employer,
-    so we never blindly write a different person who shares the same name.
+    Defaults to >=4 chars to drop noise. Callers can pass min_len=2 as a fallback
+    to recover short acronym employers (IBM, SAP, AWS, EY, 3M) that would
+    otherwise yield no tokens at all.
     """
-    title_norm = _strip_accents(title or "")
-    return any(token in title_norm for token in _company_tokens(company))
+    tokens = re.findall(r"[a-z0-9]+", _strip_accents(company))
+    return [t for t in tokens if len(t) >= min_len and t not in _COMPANY_STOPWORDS]
+
+
+def _token_present(token: str, haystack: str) -> bool:
+    """Whole-token (word-boundary) match, treating digits as word chars.
+
+    Substring matching would let 'cisco' corroborate inside 'francisco', so we
+    require the token to stand alone (bounded by non-alphanumerics or string
+    ends). Handles digit-bearing tokens like 'big4play'/'3m' correctly, which
+    plain \\b would mishandle around digit/letter transitions.
+    """
+    pattern = r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])"
+    return re.search(pattern, haystack) is not None
+
+
+def _company_corroborated(company: str, title: str, body: str) -> bool:
+    """True if an identifying company token appears in the profile's own text.
+
+    We check BOTH the result title ("Real Name - Headline | LinkedIn") and the
+    snippet/body (an excerpt of the actual profile page). This is the safeguard
+    against same-name-different-company matches: DuckDuckGo only loosely honors a
+    quoted company, so a query like `"Zubair Bhatti" "HPC Consultancy"` can still
+    return a *different* Zubair Bhatti. Requiring the company to actually surface
+    in the returned profile — not just in our query — rejects those impostors.
+
+    Searching the body is safe here precisely because it is an excerpt of the
+    matched page: if the company isn't on that person's profile it won't appear,
+    so a wrong-company profile can't corroborate. (This differs from NAME
+    matching, where the body is untrustworthy because it echoes the searched
+    company; see name_matches_profile.)
+
+    Tokens are matched on word boundaries (not raw substrings) so 'cisco' can't
+    corroborate inside 'francisco'. Strong tokens are >=4 chars; if a company has
+    none (short acronym employers like IBM/SAP/EY/3M), we fall back to >=2-char
+    tokens so those aren't always skipped.
+
+    If the company still has no identifying tokens (all generic, e.g. "Self
+    employed"), corroboration is impossible, so we return False and skip rather
+    than risk writing a stranger.
+    """
+    tokens = _company_tokens(company)
+    if not tokens:
+        # Short-acronym fallback (IBM, EY, 3M, SAP, AWS) so they aren't lost.
+        tokens = _company_tokens(company, min_len=2)
+    if not tokens:
+        return False
+    haystack = _strip_accents(title or "") + " " + _strip_accents(body or "")
+    return any(_token_present(token, haystack) for token in tokens)
 
 
 def name_matches_profile(name: str, href: str, title: str) -> bool:
@@ -237,14 +281,24 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
     """Search DuckDuckGo for the contact's verified LinkedIn /in/ profile.
 
     Tries several queries in order of confidence and returns the first /in/ URL
-    whose name matches the contact (see name_matches_profile):
+    that matches the contact on BOTH axes:
 
-      1. the full company string, then each listed company on its own — Swapcard
-         often packs two companies into one field ("A Ltd / b.com", "A (B)") and
-         quoting the whole thing rarely matches, but a single company does;
-      2. a final name-only query, accepted ONLY when a company token also shows
-         up in the profile title — this rescues people DuckDuckGo won't return
-         for any quoted company, without blindly writing a same-named stranger.
+      * name — the profile's slug or title must contain the contact's name
+        (see name_matches_profile); AND
+      * company — an identifying company token must actually appear in the
+        returned profile's title or snippet (see _company_corroborated).
+
+    Queries tried: the full company string, then each listed company on its own
+    (Swapcard often packs two companies into one field — "A Ltd / b.com",
+    "A (B)" — and quoting the whole thing rarely matches), then a final
+    name-only query as a last resort.
+
+    Crucially, putting the company in the query is NOT enough to accept a hit:
+    DuckDuckGo only loosely honors quotes, so `"Name" "Company"` can still return
+    a *different* person who shares the name but works elsewhere. We therefore
+    require the company to be corroborated *in the result itself* for every
+    query, name-only or not — this is what stops same-name/wrong-company URLs
+    from being written.
 
     Returns `(url_or_None, queries_run)`. `queries_run` lets the caller charge
     every actual DuckDuckGo request against MAX_LOOKUPS, since one contact can
@@ -253,15 +307,15 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
     non-"no results" DDGS) errors are raised so the caller leaves the row for a
     later retry instead of Skipping it.
     """
-    attempts: list[tuple[str, bool]] = [
-        (f'"{name}" "{variant}" site:linkedin.com/in/', True)
+    attempts: list[str] = [
+        f'"{name}" "{variant}" site:linkedin.com/in/'
         for variant in _company_variants(company)
     ]
-    # Name-only last resort: requires company corroboration in the title.
-    attempts.append((f'"{name}" site:linkedin.com/in/', False))
+    # Name-only last resort: still requires company corroboration in the result.
+    attempts.append(f'"{name}" site:linkedin.com/in/')
 
     queries_run = 0
-    for index, (query, company_in_query) in enumerate(attempts):
+    for index, query in enumerate(attempts):
         if index:
             time.sleep(config.SEARCH_INTERVAL)  # pace DuckDuckGo between queries
         queries_run += 1
@@ -273,9 +327,12 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
             if not (link and "linkedin.com/in/" in link):
                 continue
             title = item.get("title")
+            body = item.get("body")
             if not name_matches_profile(name, link, title):
                 continue
-            if company_in_query or _company_in_title(company, title):
+            # Always confirm the company surfaces in the actual profile, never
+            # just because we searched for it — guards against same-name matches.
+            if _company_corroborated(company, title, body):
                 return link, queries_run
     return None, queries_run
 
