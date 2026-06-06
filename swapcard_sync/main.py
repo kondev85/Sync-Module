@@ -344,7 +344,11 @@ def run() -> None:
             processed += 1
             # Absolute index (`seen`) doubles as the resume offset: if the run is
             # interrupted, re-run with SKIP_CONTACTS set to the last index shown.
-            print(f"  [{seen}] {status:8} {(contact['name'] or '(no name)')[:45]}")
+            name_display = contact.get("name") or "(no name)"
+            company_display = contact.get("company") or ""
+            if company_display:
+                name_display = f"{name_display} ({company_display})"
+            print(f"  [{seen}] {status:8} {name_display[:80]}")
             if limit and processed >= limit:
                 print(f"  reached test limit of {limit} attendees.")
                 reached_limit = True
@@ -373,6 +377,54 @@ def run() -> None:
     print(f"  created: {totals['created']}")
     print(f"  updated: {totals['updated']}")
     print(f"  errors:  {totals['error']}")
+
+
+def _run_enricher_interactive() -> None:
+    """Prompt for a batch size, then run the LinkedIn enricher.
+
+    Lets the user type a number (e.g. 1000) or press Enter to use the current
+    MAX_LOOKUPS default, or type 0 / 'all' to process the entire list with no cap.
+    The MAX_LOOKUPS env var (or its default) is shown as the suggestion so the
+    user always knows what they're agreeing to.
+    """
+    current = config.MAX_LOOKUPS
+    if current == 0:
+        suggestion = "0 (unlimited — full list)"
+    else:
+        suggestion = str(current)
+
+    print()
+    print(f"  Current search cap (MAX_LOOKUPS): {suggestion}")
+    print("  Enter a number to change it for this run,")
+    print("  or press Enter to keep the current value.")
+    print("  Type 0 or 'all' to remove the cap and process every contact.")
+    try:
+        raw = input("  Batch size [Enter = keep current]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return
+
+    if raw in ("", ):
+        # keep whatever config says (including 0 = unlimited)
+        pass
+    elif raw in ("0", "all", "none", "unlimited"):
+        config.MAX_LOOKUPS = 0
+        print("  No cap — will process the full list.")
+    else:
+        try:
+            val = int(raw)
+            if val < 0:
+                raise ValueError
+            config.MAX_LOOKUPS = val
+            if val == 0:
+                print("  No cap — will process the full list.")
+            else:
+                print(f"  Batch size set to {val} for this run.")
+        except ValueError:
+            print(f"  Invalid input {raw!r} — keeping current cap ({suggestion}).")
+
+    print()
+    linkedin_enricher.run()
 
 
 def main() -> None:
@@ -405,7 +457,7 @@ def main() -> None:
     if choice == "1":
         run()
     elif choice == "2":
-        linkedin_enricher.run()
+        _run_enricher_interactive()
     else:
         print(f"Unknown option {choice!r}. Please run again and choose 1 or 2.")
 

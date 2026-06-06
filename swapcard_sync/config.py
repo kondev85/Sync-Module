@@ -100,9 +100,11 @@ RUN_MODE = os.environ.get("RUN_MODE", "").strip().lower()
 
 # === LinkedIn enricher (DuckDuckGo) ===
 # Hard stop after this many searches per run. DuckDuckGo has no fixed daily
-# quota, but it rate-limits aggressively, so keep a sane per-run cap. Override
-# via env (e.g. MAX_LOOKUPS=500) for larger runs.
-MAX_LOOKUPS = max(1, int(os.environ.get("MAX_LOOKUPS", "300")))
+# quota, but it rate-limits aggressively, so a cap is recommended for large
+# runs. Override via env: MAX_LOOKUPS=1000 for bigger batches, or MAX_LOOKUPS=0
+# to remove the cap entirely and process the full list in one run.
+_max_lookups_raw = int(os.environ.get("MAX_LOOKUPS", "300"))
+MAX_LOOKUPS = max(0, _max_lookups_raw)  # 0 = unlimited
 # Pause (seconds) between searches. DuckDuckGo throttles bursts, so a >=2s pace
 # is recommended to avoid 202/rate-limit responses. Falls back to the legacy
 # GOOGLE_LOOKUP_INTERVAL env name if SEARCH_INTERVAL isn't set.

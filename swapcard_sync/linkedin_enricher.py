@@ -366,10 +366,17 @@ def run() -> None:
         print("No contacts are missing a LinkedIn profile. Nothing to do.")
         return
 
-    print(
-        f"Found {len(contacts)} contact(s) without LinkedIn. "
-        f"Will perform up to {config.MAX_LOOKUPS} DuckDuckGo searches this run."
-    )
+    max_lookups = config.MAX_LOOKUPS  # may be overridden by interactive prompt
+    if max_lookups == 0:
+        print(
+            f"Found {len(contacts)} contact(s) without LinkedIn. "
+            "No search cap — will process the full list."
+        )
+    else:
+        print(
+            f"Found {len(contacts)} contact(s) without LinkedIn. "
+            f"Will perform up to {max_lookups} DuckDuckGo searches this run."
+        )
 
     lookups = 0  # actual DuckDuckGo queries run (a contact can cost several)
     found = 0
@@ -378,9 +385,9 @@ def run() -> None:
     errors = 0
 
     for contact in contacts:
-        if lookups >= config.MAX_LOOKUPS:
+        if max_lookups and lookups >= max_lookups:
             print(
-                f"\nReached the search cap of {config.MAX_LOOKUPS} for this run "
+                f"\nReached the search cap of {max_lookups} for this run "
                 "(rate-limit safeguard). Re-run later to continue."
             )
             break
