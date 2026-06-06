@@ -47,6 +47,54 @@ def _name_tokens(name: str) -> list[str]:
     return [t for t in tokens if len(t) >= 2 and t not in _NAME_PARTICLES]
 
 
+# Generic corporate words that carry no identifying signal, so they must not be
+# what we corroborate a name-only match against (e.g. a stray "consulting" in an
+# unrelated person's headline would otherwise count as a company hit).
+_COMPANY_STOPWORDS = {
+    "ltd", "limited", "inc", "llc", "gmbh", "co", "corp", "corporation", "group",
+    "holding", "holdings", "the", "and", "consulting", "ecommerce", "com", "plc",
+    "ag", "sa", "srl", "bv", "oy", "ab", "as", "kft", "solutions", "services",
+    "company", "international", "global", "agency", "studio", "media", "digital",
+}
+
+
+def _company_variants(company: str) -> list[str]:
+    """Ordered, de-duped search terms for a (possibly multi-) company field.
+
+    Swapcard often lists two companies in one field, e.g.
+    "HHK Ecommerce Consulting Ltd / vip-grinders.com" or "Taptica (Nexxen)".
+    Quoting the whole string rarely matches verbatim, so we also try each part
+    on its own. The full string stays first (most specific when it does hit).
+    """
+    company = (company or "").strip()
+    out: list[str] = []
+    if company:
+        out.append(company)
+    for part in re.split(r"[/()|,;]| - ", company):
+        part = part.strip(" -")
+        if part and part not in out:
+            out.append(part)
+    return out
+
+
+def _company_tokens(company: str) -> list[str]:
+    """Identifying company tokens (>=4 chars, minus generic corporate words)."""
+    tokens = re.findall(r"[a-z0-9]+", _strip_accents(company))
+    return [t for t in tokens if len(t) >= 4 and t not in _COMPANY_STOPWORDS]
+
+
+def _company_in_title(company: str, title: str) -> bool:
+    """True if an identifying company token appears in the profile title.
+
+    Used to corroborate a name-only fallback match: it lets us accept a profile
+    found without the company in the query (DuckDuckGo is flaky with quoted
+    company phrases) only when the title independently confirms the employer,
+    so we never blindly write a different person who shares the same name.
+    """
+    title_norm = _strip_accents(title or "")
+    return any(token in title_norm for token in _company_tokens(company))
+
+
 def name_matches_profile(name: str, href: str, title: str) -> bool:
     """True only if the profile plausibly belongs to `name`.
 
@@ -185,35 +233,69 @@ def fetch_contacts_missing_linkedin() -> list[dict]:
     return contacts
 
 
-def search_linkedin(name: str, company: str) -> str | None:
+def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
     """Search DuckDuckGo for the contact's verified LinkedIn /in/ profile.
 
-    Scans results in order and returns the first /in/ URL whose name actually
-    matches the contact (see name_matches_profile) — so a loosely-related hit for
-    an unindexed person is rejected rather than written. Returns None when no
-    result matches confidently (treated by the caller as "Skipped"). Transient
-    rate-limit/timeout errors are raised so the caller leaves the row for a later
-    retry instead of marking it Skipped.
+    Tries several queries in order of confidence and returns the first /in/ URL
+    whose name matches the contact (see name_matches_profile):
+
+      1. the full company string, then each listed company on its own — Swapcard
+         often packs two companies into one field ("A Ltd / b.com", "A (B)") and
+         quoting the whole thing rarely matches, but a single company does;
+      2. a final name-only query, accepted ONLY when a company token also shows
+         up in the profile title — this rescues people DuckDuckGo won't return
+         for any quoted company, without blindly writing a same-named stranger.
+
+    Returns `(url_or_None, queries_run)`. `queries_run` lets the caller charge
+    every actual DuckDuckGo request against MAX_LOOKUPS, since one contact can
+    now cost several searches. url is None when nothing matches confidently
+    (caller marks it "Skipped"). Transient rate-limit/timeout (and other
+    non-"no results" DDGS) errors are raised so the caller leaves the row for a
+    later retry instead of Skipping it.
     """
-    query = f'"{name}" "{company}" site:linkedin.com/in/'
+    attempts: list[tuple[str, bool]] = [
+        (f'"{name}" "{variant}" site:linkedin.com/in/', True)
+        for variant in _company_variants(company)
+    ]
+    # Name-only last resort: requires company corroboration in the title.
+    attempts.append((f'"{name}" site:linkedin.com/in/', False))
+
+    queries_run = 0
+    for index, (query, company_in_query) in enumerate(attempts):
+        if index:
+            time.sleep(config.SEARCH_INTERVAL)  # pace DuckDuckGo between queries
+        queries_run += 1
+        results = _ddg_text(query)
+        if results is None:
+            continue  # genuine "no results" for this query — try the next one
+        for item in results:
+            link = item.get("href")
+            if not (link and "linkedin.com/in/" in link):
+                continue
+            title = item.get("title")
+            if not name_matches_profile(name, link, title):
+                continue
+            if company_in_query or _company_in_title(company, title):
+                return link, queries_run
+    return None, queries_run
+
+
+def _ddg_text(query: str) -> list | None:
+    """Run one DuckDuckGo text search.
+
+    Returns the result list, or None for a genuine "no results" (a real
+    no-match). Re-raises rate-limit/timeout and any other DDGS failure so the
+    caller treats it as transient (retry) rather than a permanent Skip.
+    """
     try:
         with DDGS(timeout=config.REQUEST_TIMEOUT) as ddgs:
-            results = ddgs.text(query, max_results=10)
+            return ddgs.text(query, max_results=10) or []
     except (RatelimitException, TimeoutException):
-        raise  # transient — let run() count it as an error and retry next run
+        raise
     except DDGSException as exc:
-        # Only a literal "no results" is a genuine no-match (-> Skipped). Any
-        # other DDGS failure (backend/parser/network hiccup) is transient, so
-        # re-raise it rather than permanently stamping the row Skipped.
         if "no results" in str(exc).lower():
             return None
         raise
-    for item in results or []:
-        link = item.get("href")
-        if link and "linkedin.com/in/" in link:
-            if name_matches_profile(name, link, item.get("title")):
-                return link
-    return None
 
 
 def _status_property(option_name: str) -> dict | None:
@@ -289,7 +371,7 @@ def run() -> None:
         f"Will perform up to {config.MAX_LOOKUPS} DuckDuckGo searches this run."
     )
 
-    lookups = 0
+    lookups = 0  # actual DuckDuckGo queries run (a contact can cost several)
     found = 0
     no_match = 0
     skipped = 0
@@ -315,8 +397,8 @@ def run() -> None:
             continue
 
         try:
-            lookups += 1
-            link = search_linkedin(name, company)
+            link, queries_run = search_linkedin(name, company)
+            lookups += queries_run
             # Stamp the outcome either way: a verified URL -> "Yes"; no confident
             # match -> "Skipped" (LinkedIn stays empty, never retried).
             record_result(contact["page_id"], link)
