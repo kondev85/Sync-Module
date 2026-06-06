@@ -12,10 +12,10 @@ SWAPCARD_COOKIE = os.environ.get("SWAPCARD_COOKIE")
 NOTION_API_TOKEN = os.environ.get("NOTION_API_TOKEN")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-# Google Programmable Search (Custom Search JSON API) — used by the LinkedIn
-# enricher. GOOGLE_API_KEY is a Cloud API key with "Custom Search API" enabled;
-# GOOGLE_CSE_ID is the search engine's `cx` value. The engine must have
-# "Search the entire web" turned ON or site: queries return nothing.
+# Legacy Google Programmable Search vars. The LinkedIn enricher used to call the
+# Custom Search JSON API, but it now uses DuckDuckGo (no API key required), so
+# these are no longer read by any code path. Kept only for backward compat /
+# reference; safe to remove from Secrets.
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")
 
@@ -98,12 +98,22 @@ SKIP_CONTACTS = max(0, int(os.environ.get("SKIP_CONTACTS", "0")))
 # commands, cron). Unset = show the [1]/[2] menu.
 RUN_MODE = os.environ.get("RUN_MODE", "").strip().lower()
 
-# === LinkedIn enricher (Google CSE) ===
-# Hard stop after this many Google lookups per run. Defaults to 95 to stay under
-# Google's 100/day free quota with headroom; override via env for paid quota.
-MAX_LOOKUPS = max(1, int(os.environ.get("MAX_LOOKUPS", "95")))
-# Pause (seconds) between Google lookups to keep request pacing clean.
-GOOGLE_LOOKUP_INTERVAL = max(0.0, float(os.environ.get("GOOGLE_LOOKUP_INTERVAL", "1.0")))
+# === LinkedIn enricher (DuckDuckGo) ===
+# Hard stop after this many searches per run. DuckDuckGo has no fixed daily
+# quota, but it rate-limits aggressively, so keep a sane per-run cap. Override
+# via env (e.g. MAX_LOOKUPS=500) for larger runs.
+MAX_LOOKUPS = max(1, int(os.environ.get("MAX_LOOKUPS", "300")))
+# Pause (seconds) between searches. DuckDuckGo throttles bursts, so a >=2s pace
+# is recommended to avoid 202/rate-limit responses. Falls back to the legacy
+# GOOGLE_LOOKUP_INTERVAL env name if SEARCH_INTERVAL isn't set.
+SEARCH_INTERVAL = max(
+    0.0,
+    float(
+        os.environ.get(
+            "SEARCH_INTERVAL", os.environ.get("GOOGLE_LOOKUP_INTERVAL", "2.5")
+        )
+    ),
+)
 
 # === Notion property names (must match the Contacts DB column names exactly) ===
 PROP_NAME = "Name"

@@ -1,35 +1,38 @@
-"""Find missing LinkedIn profiles for Notion contacts via Google Custom Search.
+"""Find missing LinkedIn profiles for Notion contacts via DuckDuckGo search.
 
 Separate from the Swapcard scraper but unified under the same project: it reuses
-config (credentials, timing) and notion_sync (authenticated, retrying Notion
-calls). The flow is:
+config (timing) and notion_sync (authenticated, retrying Notion calls). The flow
+is:
 
   1. Page through the Notion database for rows whose LinkedIn is empty.
-  2. For each, Google `"Name" "Company" site:linkedin.com/in/` via the CSE
-     JSON API.
+  2. For each, search DuckDuckGo for `"Name" "Company" site:linkedin.com/in/`.
   3. Take the first result whose URL contains linkedin.com/in/ and write it back
      to that row.
 
-Guardrails: a 1s pause between lookups, a hard cap (default 95) to stay under
-Google's 100/day free quota, and per-contact error isolation so one failure
-never aborts the run.
+DuckDuckGo needs no API key or quota project — unlike the Google CSE it replaced
+— but it rate-limits bursts, so we pace requests (config.SEARCH_INTERVAL) and
+keep a per-run cap (config.MAX_LOOKUPS). Per-contact error isolation means one
+failure never aborts the run.
 """
 
 import time
 
 import requests
+from ddgs import DDGS
+from ddgs.exceptions import DDGSException
 
 import config
 import notion_sync
 
 
 def validate() -> None:
-    """Ensure the secrets this enricher needs are present."""
+    """Ensure the secrets this enricher needs are present.
+
+    DuckDuckGo needs no credentials, so only the Notion secrets are required.
+    """
     required = {
         "NOTION_API_TOKEN": config.NOTION_API_TOKEN,
         "NOTION_DATABASE_ID": config.NOTION_DATABASE_ID,
-        "GOOGLE_API_KEY": config.GOOGLE_API_KEY,
-        "GOOGLE_CSE_ID": config.GOOGLE_CSE_ID,
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
@@ -103,8 +106,8 @@ def fetch_contacts_missing_linkedin() -> list[dict]:
     return contacts
 
 
-def google_search(name: str, company: str) -> str | None:
-    """Search Google for the contact's LinkedIn /in/ profile; return first match.
+def search_linkedin(name: str, company: str) -> str | None:
+    """Search DuckDuckGo for the contact's LinkedIn /in/ profile; first match.
 
     Returns the first result URL that contains 'linkedin.com/in/', or None if
     none of the results do. We scan results in order rather than only the very
@@ -113,20 +116,10 @@ def google_search(name: str, company: str) -> str | None:
     the first genuine profile match.
     """
     query = f'"{name}" "{company}" site:linkedin.com/in/'
-    params = {
-        "key": config.GOOGLE_API_KEY,
-        "cx": config.GOOGLE_CSE_ID,
-        "q": query,
-    }
-    resp = requests.get(
-        "https://www.googleapis.com/customsearch/v1",
-        params=params,
-        timeout=config.REQUEST_TIMEOUT,
-    )
-    resp.raise_for_status()
-    items = resp.json().get("items") or []
-    for item in items:
-        link = item.get("link")
+    with DDGS(timeout=config.REQUEST_TIMEOUT) as ddgs:
+        results = ddgs.text(query, max_results=10)
+    for item in results or []:
+        link = item.get("href")
         if link and "linkedin.com/in/" in link:
             return link
     return None
@@ -172,7 +165,7 @@ def run() -> None:
 
     print(
         f"Found {len(contacts)} contact(s) without LinkedIn. "
-        f"Will perform up to {config.MAX_LOOKUPS} Google lookups this run."
+        f"Will perform up to {config.MAX_LOOKUPS} DuckDuckGo searches this run."
     )
 
     lookups = 0
@@ -183,8 +176,8 @@ def run() -> None:
     for contact in contacts:
         if lookups >= config.MAX_LOOKUPS:
             print(
-                f"\nReached the lookup cap of {config.MAX_LOOKUPS} for this run "
-                "(Google free quota safeguard). Re-run later to continue."
+                f"\nReached the search cap of {config.MAX_LOOKUPS} for this run "
+                "(rate-limit safeguard). Re-run later to continue."
             )
             break
 
@@ -199,13 +192,16 @@ def run() -> None:
 
         try:
             lookups += 1
-            link = google_search(name, company)
+            link = search_linkedin(name, company)
             if link:
                 save_linkedin(contact["page_id"], link)
                 found += 1
                 print(f"  [found] {name} ({company}) -> {link}")
             else:
                 print(f"  [none ] {name} ({company}) — no LinkedIn match.")
+        except DDGSException as exc:
+            errors += 1
+            print(f"  [warn ] '{name}' search failed (DuckDuckGo): {exc}")
         except requests.RequestException as exc:
             errors += 1
             detail = ""
@@ -216,8 +212,8 @@ def run() -> None:
             errors += 1
             print(f"  [warn ] '{name}' unexpected error: {exc}")
         finally:
-            # Keep request pacing clean between Google lookups.
-            time.sleep(config.GOOGLE_LOOKUP_INTERVAL)
+            # Keep request pacing clean between searches (DuckDuckGo throttles).
+            time.sleep(config.SEARCH_INTERVAL)
 
     print("\nEnrichment complete.")
     print(f"  lookups: {lookups}")

@@ -22,12 +22,11 @@ Dedup is by **Name**: re-running never creates duplicates (it updates the existi
 
 ### LinkedIn enricher (`swapcard_sync/linkedin_enricher.py`)
 
-Separate from the scraper but unified in the same project: finds Notion rows with an empty **LinkedIn** and fills them by Googling `"Name" "Company" site:linkedin.com/in/` via the Google Custom Search JSON API. Only searches rows that have **both** Name and Company.
+Separate from the scraper but unified in the same project: finds Notion rows with an empty **LinkedIn** and fills them by searching **DuckDuckGo** for `"Name" "Company" site:linkedin.com/in/` (via the `ddgs` library). Only searches rows that have **both** Name and Company.
 
 - Run it: menu option **[2]**, or `cd swapcard_sync && RUN_MODE=enricher python -u main.py`.
-- Required secrets: `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`, `GOOGLE_API_KEY`, `GOOGLE_CSE_ID`.
-- **Google setup (one-time):** the API key's Cloud project must have **Custom Search API enabled**, and the Programmable Search Engine (`cx` = `GOOGLE_CSE_ID`) must have **"Search the entire web" ON** — otherwise `site:` queries return nothing. A 403 `"This project does not have the access to Custom Search JSON API"` means the API isn't enabled yet.
-- Quota guardrail: hard cap of `MAX_LOOKUPS` lookups/run (default **95**, under Google's 100/day free limit). Re-run on later days to continue. `GOOGLE_LOOKUP_INTERVAL` (default 1.0s) paces requests. A name+company match is a best guess, not a verified identity.
+- Required secrets: `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`. **No Google/search API key needed** — DuckDuckGo needs no credentials or quota project. (The old `GOOGLE_API_KEY`/`GOOGLE_CSE_ID` path was dropped because the Custom Search JSON API kept returning 403 even after enabling.)
+- Rate-limit guardrail: DuckDuckGo has no fixed daily quota but throttles bursts. Hard cap of `MAX_LOOKUPS` searches/run (default **300**); `SEARCH_INTERVAL` (default **2.5s**, falls back to legacy `GOOGLE_LOOKUP_INTERVAL`) paces requests. If you hit rate limits, raise `SEARCH_INTERVAL`. A name+company match is a best guess, not a verified identity.
 
 ### Scaffold commands (unused template — api-server/db)
 
