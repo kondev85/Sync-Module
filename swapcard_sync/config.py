@@ -105,16 +105,28 @@ RUN_MODE = os.environ.get("RUN_MODE", "").strip().lower()
 # to remove the cap entirely and process the full list in one run.
 _max_lookups_raw = int(os.environ.get("MAX_LOOKUPS", "300"))
 MAX_LOOKUPS = max(0, _max_lookups_raw)  # 0 = unlimited
-# Pause (seconds) between searches. DuckDuckGo throttles bursts, so a >=2s pace
-# is recommended to avoid 202/rate-limit responses. Falls back to the legacy
-# GOOGLE_LOOKUP_INTERVAL env name if SEARCH_INTERVAL isn't set.
+# Pause (seconds) between searches. DuckDuckGo throttles bursts, so a slow pace
+# avoids 202/rate-limit responses. Default 5s (we favour clean overnight runs over
+# speed). Falls back to the legacy GOOGLE_LOOKUP_INTERVAL env name if unset.
 SEARCH_INTERVAL = max(
     0.0,
     float(
         os.environ.get(
-            "SEARCH_INTERVAL", os.environ.get("GOOGLE_LOOKUP_INTERVAL", "2.5")
+            "SEARCH_INTERVAL", os.environ.get("GOOGLE_LOOKUP_INTERVAL", "5.0")
         )
     ),
+)
+# Randomised pacing: each wait is SEARCH_INTERVAL * (1 +/- SEARCH_JITTER). A little
+# jitter makes the request cadence look less mechanical, which DuckDuckGo throttles
+# less aggressively than a perfectly steady drumbeat. 0 = fixed interval.
+SEARCH_JITTER = min(0.9, max(0.0, float(os.environ.get("SEARCH_JITTER", "0.4"))))
+# Adaptive back-off after a transient timeout/rate-limit. Instead of poking DDG at
+# the same rhythm while it's throttling us, we pause and let it recover. The wait
+# escalates with consecutive failures (SEARCH_COOLDOWN * n) up to
+# SEARCH_COOLDOWN_MAX, and resets to zero after the next clean search.
+SEARCH_COOLDOWN = max(0.0, float(os.environ.get("SEARCH_COOLDOWN", "30")))
+SEARCH_COOLDOWN_MAX = max(
+    SEARCH_COOLDOWN, float(os.environ.get("SEARCH_COOLDOWN_MAX", "180"))
 )
 
 # === Notion property names (must match the Contacts DB column names exactly) ===

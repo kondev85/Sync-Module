@@ -15,6 +15,7 @@ keep a per-run cap (config.MAX_LOOKUPS). Per-contact error isolation means one
 failure never aborts the run.
 """
 
+import random
 import re
 import time
 import unicodedata
@@ -317,7 +318,7 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
     queries_run = 0
     for index, query in enumerate(attempts):
         if index:
-            time.sleep(config.SEARCH_INTERVAL)  # pace DuckDuckGo between queries
+            _paced_sleep()  # pace DuckDuckGo between queries
         queries_run += 1
         results = _ddg_text(query)
         if results is None:
@@ -335,6 +336,20 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
             if _company_corroborated(company, title, body):
                 return link, queries_run
     return None, queries_run
+
+
+def _paced_sleep() -> None:
+    """Wait SEARCH_INTERVAL between searches, with optional +/- jitter.
+
+    A perfectly steady drumbeat is the easiest pattern for DuckDuckGo to flag and
+    throttle, so we randomise each gap by SEARCH_JITTER to look less mechanical.
+    """
+    base = config.SEARCH_INTERVAL
+    if base <= 0:
+        return
+    if config.SEARCH_JITTER:
+        base *= 1 + random.uniform(-config.SEARCH_JITTER, config.SEARCH_JITTER)
+    time.sleep(max(0.0, base))
 
 
 def _ddg_text(query: str) -> list | None:
@@ -440,6 +455,7 @@ def run() -> None:
     no_match = 0
     skipped = 0
     errors = 0
+    consecutive_errors = 0  # drives the adaptive cooldown (gentle on DuckDuckGo)
 
     for contact in contacts:
         if max_lookups and lookups >= max_lookups:
@@ -463,6 +479,9 @@ def run() -> None:
         try:
             link, queries_run = search_linkedin(name, company)
             lookups += queries_run
+            # DuckDuckGo answered cleanly — reset the back-off here (not after the
+            # Notion write) so the streak reflects DDG health only, not Notion's.
+            consecutive_errors = 0
             # Stamp the outcome either way: a verified URL -> "Yes"; no confident
             # match -> "Skipped" (LinkedIn stays empty, never retried).
             record_result(contact["page_id"], link)
@@ -475,7 +494,21 @@ def run() -> None:
         except (RatelimitException, TimeoutException) as exc:
             # Transient: do NOT stamp Skipped, so the row retries on a later run.
             errors += 1
+            consecutive_errors += 1
             print(f"  [warn ] '{name}' transient search error (will retry): {exc}")
+            # Adaptive back-off: pause (escalating with consecutive timeouts) so
+            # DuckDuckGo can recover instead of being poked at the same rhythm.
+            cooldown = min(
+                config.SEARCH_COOLDOWN * consecutive_errors,
+                config.SEARCH_COOLDOWN_MAX,
+            )
+            if cooldown > 0:
+                print(
+                    f"  [cool ] backing off {cooldown:.0f}s after "
+                    f"{consecutive_errors} consecutive timeout(s) to let "
+                    "DuckDuckGo recover."
+                )
+                time.sleep(cooldown)
         except requests.RequestException as exc:
             errors += 1
             detail = ""
@@ -487,7 +520,7 @@ def run() -> None:
             print(f"  [warn ] '{name}' unexpected error: {exc}")
         finally:
             # Keep request pacing clean between searches (DuckDuckGo throttles).
-            time.sleep(config.SEARCH_INTERVAL)
+            _paced_sleep()
 
     print("\nEnrichment complete.")
     print(f"  lookups:  {lookups}")
