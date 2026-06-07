@@ -128,6 +128,12 @@ SEARCH_COOLDOWN = max(0.0, float(os.environ.get("SEARCH_COOLDOWN", "30")))
 SEARCH_COOLDOWN_MAX = max(
     SEARCH_COOLDOWN, float(os.environ.get("SEARCH_COOLDOWN_MAX", "180"))
 )
+# Proactive burst break: after every SEARCH_BURST_SIZE queries, pause
+# SEARCH_BURST_BREAK seconds before continuing. This resets DDG's session
+# context before it starts throttling, which is more effective than waiting
+# until timeouts start (the adaptive back-off above). 0 = disabled.
+SEARCH_BURST_SIZE = max(0, int(os.environ.get("SEARCH_BURST_SIZE", "40")))
+SEARCH_BURST_BREAK = max(0.0, float(os.environ.get("SEARCH_BURST_BREAK", "300")))
 
 # === Notion property names (must match the Contacts DB column names exactly) ===
 PROP_NAME = "Name"

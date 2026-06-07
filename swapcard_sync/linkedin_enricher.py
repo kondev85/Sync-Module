@@ -482,6 +482,22 @@ def run() -> None:
             # DuckDuckGo answered cleanly — reset the back-off here (not after the
             # Notion write) so the streak reflects DDG health only, not Notion's.
             consecutive_errors = 0
+            # Proactive burst break: every SEARCH_BURST_SIZE queries we pause
+            # SEARCH_BURST_BREAK seconds before DDG starts throttling us. This
+            # is cheaper than waiting for timeouts to accumulate.
+            burst = config.SEARCH_BURST_SIZE
+            if (
+                burst > 0
+                and config.SEARCH_BURST_BREAK > 0
+                and lookups % burst == 0
+            ):
+                print(
+                    f"\n  [burst] {lookups} searches done — pausing "
+                    f"{config.SEARCH_BURST_BREAK:.0f}s to reset DuckDuckGo "
+                    "session context (proactive burst break)."
+                )
+                time.sleep(config.SEARCH_BURST_BREAK)
+                print("  [burst] Resuming.\n")
             # Stamp the outcome either way: a verified URL -> "Yes"; no confident
             # match -> "Skipped" (LinkedIn stays empty, never retried).
             record_result(contact["page_id"], link)
