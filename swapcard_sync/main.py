@@ -249,6 +249,13 @@ def enrich_contact(contact: dict, node: dict) -> None:
         contact["notes"] = biography
 
 
+def igb_url(person_id: str | None) -> str | None:
+    """Build the IGB Live attendee profile URL from the Swapcard person id."""
+    if not person_id:
+        return None
+    return config.IGB_LIVE_PERSON_BASE_URL.rstrip("/") + "/" + person_id
+
+
 def map_node(node: dict) -> dict:
     """Flatten a deep Swapcard attendee node into the Notion contact shape."""
     first = node.get("firstName") or ""
@@ -259,6 +266,7 @@ def map_node(node: dict) -> dict:
         "role": extract_role(node),
         "linkedin": extract_linkedin(node.get("socialNetworks")),
         "notes": node.get("biography"),
+        "igb_url": igb_url(node.get("id")),
     }
 
 

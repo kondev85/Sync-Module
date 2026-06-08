@@ -93,6 +93,7 @@ EXPECTED_TYPES = {
     config.PROP_NOTES: "rich_text",
     config.PROP_LINKEDIN: "url",
     config.PROP_IGBLIVE: "checkbox",
+    config.PROP_IGB_URL: "url",
 }
 
 _schema_cache: dict | None = None
@@ -168,6 +169,8 @@ def build_properties(contact: dict) -> dict:
             properties[prop] = {"rich_text": _rich_text(contact.get(key))}
     if usable(config.PROP_LINKEDIN, "url") and contact.get("linkedin"):
         properties[config.PROP_LINKEDIN] = {"url": str(contact["linkedin"])}
+    if usable(config.PROP_IGB_URL, "url") and contact.get("igb_url"):
+        properties[config.PROP_IGB_URL] = {"url": str(contact["igb_url"])}
     if usable(config.PROP_IGBLIVE, "checkbox"):
         properties[config.PROP_IGBLIVE] = {"checkbox": True}
     return properties

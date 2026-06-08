@@ -135,6 +135,15 @@ SEARCH_COOLDOWN_MAX = max(
 SEARCH_BURST_SIZE = max(0, int(os.environ.get("SEARCH_BURST_SIZE", "40")))
 SEARCH_BURST_BREAK = max(0.0, float(os.environ.get("SEARCH_BURST_BREAK", "300")))
 
+# === IGB Live event profile URL ===
+# Base URL for attendee profile pages. The scraper appends the Swapcard person id
+# (the base64 opaque id already present in every list node) to produce a direct
+# link, e.g. https://event.igblive.com/event/igb-live-2026/person/RXZlbnRQZW9...
+IGB_LIVE_PERSON_BASE_URL = os.environ.get(
+    "IGB_LIVE_PERSON_BASE_URL",
+    "https://event.igblive.com/event/igb-live-2026/person/",
+)
+
 # === Notion property names (must match the Contacts DB column names exactly) ===
 PROP_NAME = "Name"
 PROP_COMPANY = "Company"
@@ -142,6 +151,7 @@ PROP_ROLE = "Role"
 PROP_LINKEDIN = "LinkedIn"
 PROP_NOTES = "Notes"
 PROP_IGBLIVE = "iGBLive"
+PROP_IGB_URL = "IGB URL"
 # Status column the enricher stamps so it never reprocesses a row: "Yes" when a
 # verified profile was written, "Skipped" when no confident match was found
 # (LinkedIn left empty). NOTE: the column name is intentionally spelled to match
