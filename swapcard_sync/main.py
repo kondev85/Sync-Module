@@ -347,7 +347,7 @@ def run() -> None:
                 continue
             if config.ENRICH_PROFILES:
                 enrich_contact(contact, node)
-            status = notion_sync.sync_contact(contact)
+            status, sync_note = notion_sync.sync_contact(contact)
             totals[status] = totals.get(status, 0) + 1
             processed += 1
             # Absolute index (`seen`) doubles as the resume offset: if the run is
@@ -356,7 +356,8 @@ def run() -> None:
             company_display = contact.get("company") or ""
             if company_display:
                 name_display = f"{name_display} ({company_display})"
-            print(f"  [{seen}] {status:8} {name_display[:80]}")
+            note_suffix = f"  [{sync_note}]" if sync_note else ""
+            print(f"  [{seen}] {status:8} {name_display[:80]}{note_suffix}")
             if limit and processed >= limit:
                 print(f"  reached test limit of {limit} attendees.")
                 reached_limit = True

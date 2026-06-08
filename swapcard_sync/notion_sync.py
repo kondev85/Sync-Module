@@ -224,13 +224,15 @@ def update_contact(page_id: str, contact: dict) -> dict:
     return resp.json()
 
 
-def sync_contact(contact: dict) -> str:
+def sync_contact(contact: dict) -> tuple[str, str]:
     """Insert or update a single contact, respecting the rate-limit interval.
 
-    Returns one of: 'created', 'updated', 'error'.
+    Returns (status, note) where status is one of 'created'/'updated'/'error'
+    and note is a short human-readable annotation (may be empty string).
     """
     name = contact.get("name")
     status = "error"
+    note = ""
     try:
         existing_id, already_set = find_existing(name)
         if existing_id:
@@ -239,6 +241,8 @@ def sync_contact(contact: dict) -> str:
             # the scraper ran) and avoids needless writes.
             if already_set:
                 contact = {k: v for k, v in contact.items() if k not in already_set}
+                preserved = [k.replace("_", " ").upper() for k in sorted(already_set)]
+                note = f"kept existing: {', '.join(preserved)}"
             update_contact(existing_id, contact)
             status = "updated"
         else:
@@ -254,4 +258,4 @@ def sync_contact(contact: dict) -> str:
     finally:
         # Respect Notion's structural API thresholds between row insertions.
         time.sleep(config.ROW_INSERT_INTERVAL)
-    return status
+    return status, note
