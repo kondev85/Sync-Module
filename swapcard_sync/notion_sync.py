@@ -236,15 +236,13 @@ def sync_contact(contact: dict) -> tuple[str, str]:
     try:
         existing_id, already_set = find_existing(name)
         if existing_id:
-            # Don't overwrite fields that are already populated in Notion.
-            # This preserves manually entered values (e.g. IGB URL set before
-            # the scraper ran) and avoids needless writes.
-            if already_set:
-                contact = {k: v for k, v in contact.items() if k not in already_set}
-                preserved = [k.replace("_", " ").upper() for k in sorted(already_set)]
-                note = f"kept existing: {', '.join(preserved)}"
-            update_contact(existing_id, contact)
-            status = "updated"
+            # If the IGB URL is already filled in, the row was fully synced on a
+            # previous run — skip it entirely to avoid unnecessary Notion writes.
+            if "igb_url" in already_set:
+                status = "skipped"
+            else:
+                update_contact(existing_id, contact)
+                status = "updated"
         else:
             create_contact(contact)
             status = "created"
@@ -256,6 +254,8 @@ def sync_contact(contact: dict) -> tuple[str, str]:
     except Exception as exc:  # one bad attendee must not abort the whole run
         print(f"  [notion] unexpected error syncing '{name}': {exc}")
     finally:
-        # Respect Notion's structural API thresholds between row insertions.
-        time.sleep(config.ROW_INSERT_INTERVAL)
+        # Only pace against Notion's rate limits when we actually made a write.
+        # Skipped rows cost no Notion quota, so there's nothing to throttle.
+        if status in ("created", "updated", "error"):
+            time.sleep(config.ROW_INSERT_INTERVAL)
     return status, note

@@ -383,9 +383,10 @@ def run() -> None:
         time.sleep(delay)
 
     print("\nSync complete.")
-    print(f"  created: {totals['created']}")
-    print(f"  updated: {totals['updated']}")
-    print(f"  errors:  {totals['error']}")
+    print(f"  created: {totals.get('created', 0)}")
+    print(f"  updated: {totals.get('updated', 0)}")
+    print(f"  skipped: {totals.get('skipped', 0)}  (IGB URL already set)")
+    print(f"  errors:  {totals.get('error', 0)}")
 
 
 def _run_enricher_interactive() -> None:
