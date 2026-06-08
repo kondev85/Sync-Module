@@ -176,10 +176,16 @@ def build_properties(contact: dict) -> dict:
     return properties
 
 
-def find_existing(name: str | None) -> str | None:
-    """Return the page id of an existing contact with this Name, or None."""
+def find_existing(name: str | None) -> tuple[str | None, dict]:
+    """Return (page_id, already_set) for an existing contact, or (None, {}).
+
+    `already_set` is a dict of contact keys whose Notion values are already
+    populated — callers can use it to skip overwriting those fields on update.
+    Currently tracks: 'igb_url'.  The data comes from the query response we
+    already fetch, so there is no extra API call.
+    """
     if not name:
-        return None
+        return None, {}
     url = f"{config.NOTION_API_URL}/databases/{config.NOTION_DATABASE_ID}/query"
     body = {
         "filter": {"property": config.PROP_NAME, "title": {"equals": name}},
@@ -188,7 +194,15 @@ def find_existing(name: str | None) -> str | None:
     resp = _notion_request("POST", url, body)
     resp.raise_for_status()
     results = resp.json().get("results", [])
-    return results[0]["id"] if results else None
+    if not results:
+        return None, {}
+    page = results[0]
+    props = page.get("properties", {})
+    already_set: dict = {}
+    igb_url_val = (props.get(config.PROP_IGB_URL) or {}).get("url") or ""
+    if igb_url_val.strip():
+        already_set["igb_url"] = igb_url_val.strip()
+    return page["id"], already_set
 
 
 def create_contact(contact: dict) -> dict:
@@ -218,8 +232,13 @@ def sync_contact(contact: dict) -> str:
     name = contact.get("name")
     status = "error"
     try:
-        existing_id = find_existing(name)
+        existing_id, already_set = find_existing(name)
         if existing_id:
+            # Don't overwrite fields that are already populated in Notion.
+            # This preserves manually entered values (e.g. IGB URL set before
+            # the scraper ran) and avoids needless writes.
+            if already_set:
+                contact = {k: v for k, v in contact.items() if k not in already_set}
             update_contact(existing_id, contact)
             status = "updated"
         else:
