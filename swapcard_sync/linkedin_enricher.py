@@ -35,6 +35,21 @@ _NAME_PARTICLES = {
     "le", "el", "al", "bin", "ibn", "dos", "das", "do", "san", "st",
 }
 
+# Substrings that mark a DuckDuckGo/network failure as transient (retry later).
+_TRANSIENT_SEARCH_KEYWORDS = (
+    "timeout",
+    "timed out",
+    "connecttimeout",
+    "readtimeout",
+    "connection",
+    "rate limit",
+    "ratelimit",
+    "temporarily unavailable",
+    "winerror 10060",
+    "failed to respond",
+    "network",
+)
+
 
 def _strip_accents(text: str) -> str:
     """Lowercased ASCII-folded text so 'Kārlis' compares as 'karlis'."""
@@ -185,7 +200,7 @@ def validate() -> None:
         raise RuntimeError(
             "Missing required environment secrets: "
             + ", ".join(missing)
-            + ". Set them in the Replit Secrets panel before running."
+            + ". Set them in a `.env` file at the project root or in Replit Secrets."
         )
 
 
@@ -196,6 +211,38 @@ def _plain_text(prop: dict | None) -> str:
     parts = prop.get("title") or prop.get("rich_text") or []
     text = "".join(part.get("plain_text", "") for part in parts)
     return text.strip()
+
+
+def _read_linkedin(props: dict) -> str:
+    """Return the LinkedIn URL/text already stored on a row, if any."""
+    prop = props.get(config.PROP_LINKEDIN) or {}
+    actual = notion_sync.get_schema().get(config.PROP_LINKEDIN)
+    if actual == "url":
+        return (prop.get("url") or "").strip()
+    if actual == "rich_text":
+        return _plain_text(prop)
+    return ""
+
+
+def _read_status_names(props: dict) -> list[str]:
+    """Return status-column option names already set on a row."""
+    prop = props.get(config.PROP_LINKEDIN_STATUS) or {}
+    status_type = notion_sync.get_schema().get(config.PROP_LINKEDIN_STATUS)
+    if status_type == "multi_select":
+        return [
+            item.get("name", "")
+            for item in (prop.get("multi_select") or [])
+            if item.get("name")
+        ]
+    if status_type == "select":
+        selected = prop.get("select") or {}
+        name = selected.get("name")
+        return [name] if name else []
+    if status_type == "status":
+        selected = prop.get("status") or {}
+        name = selected.get("name")
+        return [name] if name else []
+    return []
 
 
 def _linkedin_is_empty_filter() -> dict:
@@ -242,6 +289,82 @@ def _build_query_filter() -> dict:
     return linkedin_empty
 
 
+def _build_prefilled_linkedin_filter() -> dict | None:
+    """Filter for rows that already have LinkedIn but no enricher status stamp."""
+    schema = notion_sync.get_schema()
+    linkedin_type = schema.get(config.PROP_LINKEDIN)
+    status_type = schema.get(config.PROP_LINKEDIN_STATUS)
+    if linkedin_type not in ("url", "rich_text"):
+        return None
+    if status_type not in ("multi_select", "select", "status"):
+        return None
+    return {
+        "and": [
+            # Notion rejects `is_empty: false` on url/rich_text — use is_not_empty.
+            {
+                "property": config.PROP_LINKEDIN,
+                linkedin_type: {"is_not_empty": True},
+            },
+            {
+                "property": config.PROP_LINKEDIN_STATUS,
+                status_type: {"is_empty": True},
+            },
+        ]
+    }
+
+
+def _stamp_status(page_id: str, option_name: str) -> None:
+    """Write only the enricher status column (leave LinkedIn untouched)."""
+    status = _status_property(option_name)
+    if status is None:
+        return
+    url = f"{config.NOTION_API_URL}/pages/{page_id}"
+    resp = notion_sync._notion_request(
+        "PATCH",
+        url,
+        {"properties": {config.PROP_LINKEDIN_STATUS: status}},
+    )
+    resp.raise_for_status()
+
+
+def backfill_linkedin_status() -> int:
+    """Stamp 'Yes' on rows that already have LinkedIn (e.g. from the scraper).
+
+    The Swapcard scraper can populate LinkedIn without touching the enricher
+    status column. Those rows are already excluded from the empty-LinkedIn query,
+    but stamping them prevents confusion and keeps future runs aligned with Replit.
+    """
+    query_filter = _build_prefilled_linkedin_filter()
+    if query_filter is None:
+        return 0
+
+    url = f"{config.NOTION_API_URL}/databases/{config.NOTION_DATABASE_ID}/query"
+    body_base = {"filter": query_filter, "page_size": 100}
+    stamped = 0
+    cursor: str | None = None
+    while True:
+        body = dict(body_base)
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = notion_sync._notion_request("POST", url, body)
+        resp.raise_for_status()
+        data = resp.json()
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            if not _read_linkedin(props):
+                continue
+            if _read_status_names(props):
+                continue
+            _stamp_status(page["id"], config.LINKEDIN_STATUS_FOUND)
+            stamped += 1
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+        if not cursor:
+            break
+    return stamped
+
+
 def fetch_contacts_missing_linkedin() -> list[dict]:
     """Return every row with an empty LinkedIn as {page_id, name, company}.
 
@@ -263,11 +386,17 @@ def fetch_contacts_missing_linkedin() -> list[dict]:
         data = resp.json()
         for page in data.get("results", []):
             props = page.get("properties", {})
+            linkedin = _read_linkedin(props)
+            # Belt-and-suspenders: never queue a row that already has LinkedIn or
+            # a status stamp, even if Notion's server-side filter misbehaves.
+            if linkedin or _read_status_names(props):
+                continue
             contacts.append(
                 {
                     "page_id": page["id"],
                     "name": _plain_text(props.get(config.PROP_NAME)),
                     "company": _plain_text(props.get(config.PROP_COMPANY)),
+                    "linkedin": linkedin,
                 }
             )
         if not data.get("has_more"):
@@ -352,6 +481,64 @@ def _paced_sleep() -> None:
     time.sleep(max(0.0, base))
 
 
+def _is_transient_search_error(exc: BaseException) -> bool:
+    """True when a search failure should retry later and trigger backoff."""
+    if isinstance(exc, (RatelimitException, TimeoutException)):
+        return True
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    try:
+        import httpx
+
+        if isinstance(
+            exc,
+            (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError),
+        ):
+            return True
+    except ImportError:
+        pass
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (RatelimitException, TimeoutException)):
+            return True
+        if isinstance(current, (requests.Timeout, requests.ConnectionError)):
+            return True
+        blob = f"{type(current).__name__} {current}".lower()
+        if any(keyword in blob for keyword in _TRANSIENT_SEARCH_KEYWORDS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _search_cooldown_seconds(consecutive_errors: int) -> float:
+    """Escalating pause after consecutive search failures, with random jitter."""
+    if consecutive_errors < config.SEARCH_COOLDOWN_AFTER:
+        return 0.0
+    steps = consecutive_errors - config.SEARCH_COOLDOWN_AFTER + 1
+    base = min(config.SEARCH_COOLDOWN * steps, config.SEARCH_COOLDOWN_MAX)
+    if config.SEARCH_COOLDOWN_JITTER and base > 0:
+        base *= 1 + random.uniform(
+            -config.SEARCH_COOLDOWN_JITTER, config.SEARCH_COOLDOWN_JITTER
+        )
+    return max(0.0, base)
+
+
+def _maybe_search_cooldown(consecutive_errors: int) -> None:
+    """Pause with visible logging when DuckDuckGo keeps failing."""
+    cooldown = _search_cooldown_seconds(consecutive_errors)
+    if cooldown <= 0:
+        return
+    print(
+        f"  [cool ] backing off {cooldown:.0f}s after "
+        f"{consecutive_errors} consecutive search error(s) "
+        "to let DuckDuckGo recover."
+    )
+    time.sleep(cooldown)
+
+
 def _ddg_text(query: str) -> list | None:
     """Run one DuckDuckGo text search.
 
@@ -367,6 +554,12 @@ def _ddg_text(query: str) -> list | None:
     except DDGSException as exc:
         if "no results" in str(exc).lower():
             return None
+        if _is_transient_search_error(exc):
+            raise TimeoutException(str(exc)) from exc
+        raise
+    except Exception as exc:
+        if _is_transient_search_error(exc):
+            raise TimeoutException(str(exc)) from exc
         raise
 
 
@@ -386,14 +579,24 @@ def _status_property(option_name: str) -> dict | None:
     return None
 
 
-def record_result(page_id: str, linkedin_url: str | None) -> None:
+def record_result(
+    page_id: str,
+    linkedin_url: str | None,
+    *,
+    existing_linkedin: str = "",
+) -> None:
     """Persist one contact's outcome in a single Notion PATCH.
 
     Found  -> write the LinkedIn URL and stamp status "Yes".
     No match -> leave LinkedIn empty and stamp status "Skipped" (so it's never
     retried). Writing the URL stays type-aware (url or rich_text).
+
+    If the row already has a LinkedIn URL, it is never overwritten — only the
+    status stamp is updated when needed.
     """
     properties: dict = {}
+    if existing_linkedin.strip():
+        linkedin_url = existing_linkedin.strip()
     if linkedin_url:
         actual = notion_sync.get_schema().get(config.PROP_LINKEDIN)
         if actual == "url":
@@ -426,6 +629,21 @@ def run() -> None:
     except RuntimeError as exc:
         print(f"[enricher] {exc}")
         return
+
+    notion_sync.clear_schema_cache()
+
+    print("Checking for contacts that already have LinkedIn (from scraper/manual)...")
+    try:
+        stamped = backfill_linkedin_status()
+    except requests.RequestException as exc:
+        # Non-fatal: the main empty-LinkedIn query still has client-side guards.
+        print(f"[enricher] WARNING: could not backfill existing LinkedIn rows: {exc}")
+        stamped = 0
+    if stamped:
+        print(
+            f"  Stamped {stamped} row(s) as Yes — they already had LinkedIn and "
+            "were not searched."
+        )
 
     print("Finding contacts missing a LinkedIn profile...")
     try:
@@ -476,6 +694,17 @@ def run() -> None:
             skipped += 1
             continue
 
+        existing_linkedin = (contact.get("linkedin") or "").strip()
+        if existing_linkedin:
+            preview = (
+                existing_linkedin
+                if len(existing_linkedin) <= 60
+                else existing_linkedin[:60] + "..."
+            )
+            print(f"  [skip ] '{name}' — LinkedIn already set ({preview}).")
+            skipped += 1
+            continue
+
         try:
             link, queries_run = search_linkedin(name, company)
             lookups += queries_run
@@ -500,31 +729,17 @@ def run() -> None:
                 print("  [burst] Resuming.\n")
             # Stamp the outcome either way: a verified URL -> "Yes"; no confident
             # match -> "Skipped" (LinkedIn stays empty, never retried).
-            record_result(contact["page_id"], link)
+            record_result(
+                contact["page_id"],
+                link,
+                existing_linkedin=existing_linkedin,
+            )
             if link:
                 found += 1
                 print(f"  [found] {name} ({company}) -> {link}")
             else:
                 no_match += 1
                 print(f"  [none ] {name} ({company}) — no match -> Skipped.")
-        except (RatelimitException, TimeoutException) as exc:
-            # Transient: do NOT stamp Skipped, so the row retries on a later run.
-            errors += 1
-            consecutive_errors += 1
-            print(f"  [warn ] '{name}' transient search error (will retry): {exc}")
-            # Adaptive back-off: pause (escalating with consecutive timeouts) so
-            # DuckDuckGo can recover instead of being poked at the same rhythm.
-            cooldown = min(
-                config.SEARCH_COOLDOWN * consecutive_errors,
-                config.SEARCH_COOLDOWN_MAX,
-            )
-            if cooldown > 0:
-                print(
-                    f"  [cool ] backing off {cooldown:.0f}s after "
-                    f"{consecutive_errors} consecutive timeout(s) to let "
-                    "DuckDuckGo recover."
-                )
-                time.sleep(cooldown)
         except requests.RequestException as exc:
             errors += 1
             detail = ""
@@ -532,8 +747,16 @@ def run() -> None:
                 detail = f" ({exc.response.status_code}: {exc.response.text[:200]})"
             print(f"  [warn ] '{name}' Notion write failed: {exc}{detail}")
         except Exception as exc:  # one bad contact must not abort the whole run
-            errors += 1
-            print(f"  [warn ] '{name}' unexpected error: {exc}")
+            if _is_transient_search_error(exc):
+                errors += 1
+                consecutive_errors += 1
+                print(
+                    f"  [warn ] '{name}' transient search error (will retry): {exc}"
+                )
+                _maybe_search_cooldown(consecutive_errors)
+            else:
+                errors += 1
+                print(f"  [warn ] '{name}' unexpected error: {exc}")
         finally:
             # Keep request pacing clean between searches (DuckDuckGo throttles).
             _paced_sleep()

@@ -1,12 +1,20 @@
 """Global settings, timing constraints, and credential handling.
 
-All sensitive values are read from environment variables (Replit Secrets).
-Nothing here is hardcoded — see validate() for the required secrets.
+All sensitive values are read from environment variables (Replit Secrets or a
+local `.env` file in the project root). Nothing here is hardcoded — see
+validate() for the required secrets.
 """
 
 import os
+from pathlib import Path
 
-# === Credentials (loaded from environment / Replit Secrets) ===
+from dotenv import load_dotenv
+
+# Load `.env` from the project root so secrets work outside Replit. Path is
+# relative to this file (swapcard_sync/config.py -> ../.env), not the shell cwd.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+# === Credentials (loaded from environment / Replit Secrets / .env) ===
 SWAPCARD_BEARER_TOKEN = os.environ.get("SWAPCARD_BEARER_TOKEN")
 SWAPCARD_COOKIE = os.environ.get("SWAPCARD_COOKIE")
 NOTION_API_TOKEN = os.environ.get("NOTION_API_TOKEN")
@@ -124,9 +132,15 @@ SEARCH_JITTER = min(0.9, max(0.0, float(os.environ.get("SEARCH_JITTER", "0.4")))
 # the same rhythm while it's throttling us, we pause and let it recover. The wait
 # escalates with consecutive failures (SEARCH_COOLDOWN * n) up to
 # SEARCH_COOLDOWN_MAX, and resets to zero after the next clean search.
+# Cooldown only kicks in after SEARCH_COOLDOWN_AFTER consecutive search errors.
 SEARCH_COOLDOWN = max(0.0, float(os.environ.get("SEARCH_COOLDOWN", "30")))
 SEARCH_COOLDOWN_MAX = max(
     SEARCH_COOLDOWN, float(os.environ.get("SEARCH_COOLDOWN_MAX", "180"))
+)
+SEARCH_COOLDOWN_AFTER = max(1, int(os.environ.get("SEARCH_COOLDOWN_AFTER", "2")))
+# Randomise each cooldown wait by +/- this fraction so pauses look less mechanical.
+SEARCH_COOLDOWN_JITTER = min(
+    0.9, max(0.0, float(os.environ.get("SEARCH_COOLDOWN_JITTER", "0.3")))
 )
 # Proactive burst break: after every SEARCH_BURST_SIZE queries, pause
 # SEARCH_BURST_BREAK seconds before continuing. This resets DDG's session
@@ -178,5 +192,5 @@ def validate() -> None:
         raise RuntimeError(
             "Missing required environment secrets: "
             + ", ".join(missing)
-            + ". Set them in the Replit Secrets panel before running."
+            + ". Set them in a `.env` file at the project root or in Replit Secrets."
         )
