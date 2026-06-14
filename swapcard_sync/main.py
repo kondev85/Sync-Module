@@ -390,13 +390,37 @@ def run() -> None:
 
 
 def _run_enricher_interactive() -> None:
-    """Prompt for a batch size, then run the LinkedIn enricher.
+    """Prompt for search backend and batch size, then run the LinkedIn enricher.
 
-    Lets the user type a number (e.g. 1000) or press Enter to use the current
-    MAX_LOOKUPS default, or type 0 / 'all' to process the entire list with no cap.
-    The MAX_LOOKUPS env var (or its default) is shown as the suggestion so the
-    user always knows what they're agreeing to.
+    Step 1 — choose backend (DuckDuckGo free / Serper paid).
+    Step 2 — optionally override the search cap (MAX_LOOKUPS).
     """
+    # --- Step 1: backend selection ---
+    print()
+    print("  Search backend:")
+    print("  [1] DuckDuckGo  (free, no API key, may be rate-limited)")
+    print("  [2] Serper      (paid, requires SERPER_API_KEY, more reliable)")
+    current_backend = config.SEARCH_BACKEND
+    current_label = "Serper" if current_backend == "serper" else "DuckDuckGo"
+    print(f"  Current: {current_label}  (set SEARCH_BACKEND env var to change default)")
+    try:
+        backend_choice = input("  Select backend [Enter = keep current]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return
+
+    if backend_choice == "1":
+        config.SEARCH_BACKEND = "ddg"
+        print("  Using DuckDuckGo for this run.")
+    elif backend_choice == "2":
+        config.SEARCH_BACKEND = "serper"
+        print("  Using Serper for this run.")
+    elif backend_choice == "":
+        print(f"  Keeping current backend: {current_label}.")
+    else:
+        print(f"  Unknown choice {backend_choice!r} — keeping current backend: {current_label}.")
+
+    # --- Step 2: batch size ---
     current = config.MAX_LOOKUPS
     if current == 0:
         suggestion = "0 (unlimited — full list)"
@@ -414,8 +438,7 @@ def _run_enricher_interactive() -> None:
         print("\nCancelled.")
         return
 
-    if raw in ("", ):
-        # keep whatever config says (including 0 = unlimited)
+    if raw in ("",):
         pass
     elif raw in ("0", "all", "none", "unlimited"):
         config.MAX_LOOKUPS = 0

@@ -189,12 +189,14 @@ def name_matches_profile(name: str, href: str, title: str) -> bool:
 def validate() -> None:
     """Ensure the secrets this enricher needs are present.
 
-    DuckDuckGo needs no credentials, so only the Notion secrets are required.
+    DuckDuckGo needs no credentials; Serper requires SERPER_API_KEY.
     """
-    required = {
+    required: dict = {
         "NOTION_API_TOKEN": config.NOTION_API_TOKEN,
         "NOTION_DATABASE_ID": config.NOTION_DATABASE_ID,
     }
+    if config.SEARCH_BACKEND == "serper":
+        required["SERPER_API_KEY"] = config.SERPER_API_KEY
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise RuntimeError(
@@ -449,7 +451,7 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
         if index:
             _paced_sleep()  # pace DuckDuckGo between queries
         queries_run += 1
-        results = _ddg_text(query)
+        results = _search_text(query)
         if results is None:
             continue  # genuine "no results" for this query — try the next one
         for item in results:
@@ -563,6 +565,50 @@ def _ddg_text(query: str) -> list | None:
         raise
 
 
+def _serper_text(query: str) -> list | None:
+    """Run one Serper.dev Google search and return results in DDG-compatible shape.
+
+    Serper returns `{"organic": [{"title": ..., "link": ..., "snippet": ...}]}`.
+    We normalise to `[{"href": ..., "title": ..., "body": ...}]` so the rest of
+    the enricher logic is backend-agnostic.
+
+    Raises RatelimitException on HTTP 429 (mirrors DDG behaviour so the shared
+    cooldown/backoff logic kicks in). Raises requests.HTTPError on other failures.
+    Returns None only for a genuine "no results" response (empty organic list).
+    """
+    api_key = config.SERPER_API_KEY
+    if not api_key:
+        raise RuntimeError(
+            "SERPER_API_KEY is not set. Add it to Replit Secrets or your .env file."
+        )
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": query, "num": 10},
+            timeout=config.REQUEST_TIMEOUT,
+        )
+    except (requests.Timeout, requests.ConnectionError):
+        raise
+    if resp.status_code == 429:
+        raise RatelimitException("Serper rate limit (HTTP 429)")
+    resp.raise_for_status()
+    organic = resp.json().get("organic") or []
+    if not organic:
+        return None
+    return [
+        {"href": item.get("link", ""), "title": item.get("title", ""), "body": item.get("snippet", "")}
+        for item in organic
+    ]
+
+
+def _search_text(query: str) -> list | None:
+    """Dispatch to the configured search backend (DDG or Serper)."""
+    if config.SEARCH_BACKEND == "serper":
+        return _serper_text(query)
+    return _ddg_text(query)
+
+
 def _status_property(option_name: str) -> dict | None:
     """Build the status-column value matching its actual Notion type.
 
@@ -656,24 +702,25 @@ def run() -> None:
         print("No contacts are missing a LinkedIn profile. Nothing to do.")
         return
 
+    backend_label = "Serper" if config.SEARCH_BACKEND == "serper" else "DuckDuckGo"
     max_lookups = config.MAX_LOOKUPS  # may be overridden by interactive prompt
     if max_lookups == 0:
         print(
             f"Found {len(contacts)} contact(s) without LinkedIn. "
-            "No search cap — will process the full list."
+            f"No search cap — will process the full list via {backend_label}."
         )
     else:
         print(
             f"Found {len(contacts)} contact(s) without LinkedIn. "
-            f"Will perform up to {max_lookups} DuckDuckGo searches this run."
+            f"Will perform up to {max_lookups} {backend_label} searches this run."
         )
 
-    lookups = 0  # actual DuckDuckGo queries run (a contact can cost several)
+    lookups = 0  # actual search queries run (a contact can cost several)
     found = 0
     no_match = 0
     skipped = 0
     errors = 0
-    consecutive_errors = 0  # drives the adaptive cooldown (gentle on DuckDuckGo)
+    consecutive_errors = 0  # drives the adaptive cooldown
 
     for contact in contacts:
         if max_lookups and lookups >= max_lookups:
@@ -722,8 +769,8 @@ def run() -> None:
             ):
                 print(
                     f"\n  [burst] {lookups} searches done — pausing "
-                    f"{config.SEARCH_BURST_BREAK:.0f}s to reset DuckDuckGo "
-                    "session context (proactive burst break)."
+                    f"{config.SEARCH_BURST_BREAK:.0f}s "
+                    f"(proactive burst break for {backend_label})."
                 )
                 time.sleep(config.SEARCH_BURST_BREAK)
                 print("  [burst] Resuming.\n")

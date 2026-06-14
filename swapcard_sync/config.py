@@ -27,6 +27,10 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")
 
+# Serper.dev API key — required only when SEARCH_BACKEND=serper.
+# Register at https://serper.dev/ and set via Replit Secrets or a local .env.
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
+
 # === Swapcard GraphQL API ===
 SWAPCARD_GRAPHQL_URL = "https://api.swapcard.com/graphql"
 # The event view to scrape. Overridable via env, defaults to the provided view.
@@ -106,16 +110,21 @@ SKIP_CONTACTS = max(0, int(os.environ.get("SKIP_CONTACTS", "0")))
 # commands, cron). Unset = show the [1]/[2] menu.
 RUN_MODE = os.environ.get("RUN_MODE", "").strip().lower()
 
-# === LinkedIn enricher (DuckDuckGo) ===
-# Hard stop after this many searches per run. DuckDuckGo has no fixed daily
-# quota, but it rate-limits aggressively, so a cap is recommended for large
-# runs. Override via env: MAX_LOOKUPS=1000 for bigger batches, or MAX_LOOKUPS=0
-# to remove the cap entirely and process the full list in one run.
+# === LinkedIn enricher — search backend ===
+# Which search backend to use for the LinkedIn enricher.
+#   "ddg"    — DuckDuckGo (free, no key required, rate-limited)
+#   "serper" — Serper.dev (paid, requires SERPER_API_KEY, more reliable)
+# Overridable via env (SEARCH_BACKEND=serper) for scripted/non-interactive runs.
+# The interactive menu in main.py sets this at runtime when you pick option [2].
+SEARCH_BACKEND = os.environ.get("SEARCH_BACKEND", "ddg").strip().lower()
+
+# Hard stop after this many searches per run. Override via env: MAX_LOOKUPS=1000
+# for bigger batches, or MAX_LOOKUPS=0 to remove the cap entirely.
 _max_lookups_raw = int(os.environ.get("MAX_LOOKUPS", "300"))
 MAX_LOOKUPS = max(0, _max_lookups_raw)  # 0 = unlimited
-# Pause (seconds) between searches. DuckDuckGo throttles bursts, so a slow pace
-# avoids 202/rate-limit responses. Default 5s (we favour clean overnight runs over
-# speed). Falls back to the legacy GOOGLE_LOOKUP_INTERVAL env name if unset.
+# Pause (seconds) between searches. Default 5s favours clean overnight runs.
+# Serper is more tolerant of bursts; lower to e.g. 1.0 when using Serper.
+# Falls back to the legacy GOOGLE_LOOKUP_INTERVAL env name if unset.
 SEARCH_INTERVAL = max(
     0.0,
     float(
