@@ -122,8 +122,10 @@ SEARCH_BACKEND = os.environ.get("SEARCH_BACKEND", "ddg").strip().lower()
 # for bigger batches, or MAX_LOOKUPS=0 to remove the cap entirely.
 _max_lookups_raw = int(os.environ.get("MAX_LOOKUPS", "300"))
 MAX_LOOKUPS = max(0, _max_lookups_raw)  # 0 = unlimited
-# Pause (seconds) between searches. Default 5s favours clean overnight runs.
-# Serper is more tolerant of bursts; lower to e.g. 1.0 when using Serper.
+
+# === DuckDuckGo pacing (used when SEARCH_BACKEND=ddg) ===
+# DDG is a scraped search engine with aggressive, unpredictable throttling.
+# Defaults are conservative: slow pace, heavy jitter, long cooldowns, burst breaks.
 # Falls back to the legacy GOOGLE_LOOKUP_INTERVAL env name if unset.
 SEARCH_INTERVAL = max(
     0.0,
@@ -133,30 +135,61 @@ SEARCH_INTERVAL = max(
         )
     ),
 )
-# Randomised pacing: each wait is SEARCH_INTERVAL * (1 +/- SEARCH_JITTER). A little
-# jitter makes the request cadence look less mechanical, which DuckDuckGo throttles
-# less aggressively than a perfectly steady drumbeat. 0 = fixed interval.
+# Randomised pacing: each wait is SEARCH_INTERVAL * (1 +/- SEARCH_JITTER).
+# High jitter (40%) makes the cadence look less mechanical, reducing throttling.
 SEARCH_JITTER = min(0.9, max(0.0, float(os.environ.get("SEARCH_JITTER", "0.4"))))
-# Adaptive back-off after a transient timeout/rate-limit. Instead of poking DDG at
-# the same rhythm while it's throttling us, we pause and let it recover. The wait
-# escalates with consecutive failures (SEARCH_COOLDOWN * n) up to
-# SEARCH_COOLDOWN_MAX, and resets to zero after the next clean search.
-# Cooldown only kicks in after SEARCH_COOLDOWN_AFTER consecutive search errors.
+# Adaptive back-off: escalates with consecutive failures, resets on clean search.
+# Cooldown only kicks in after SEARCH_COOLDOWN_AFTER consecutive errors.
 SEARCH_COOLDOWN = max(0.0, float(os.environ.get("SEARCH_COOLDOWN", "30")))
 SEARCH_COOLDOWN_MAX = max(
     SEARCH_COOLDOWN, float(os.environ.get("SEARCH_COOLDOWN_MAX", "180"))
 )
 SEARCH_COOLDOWN_AFTER = max(1, int(os.environ.get("SEARCH_COOLDOWN_AFTER", "2")))
-# Randomise each cooldown wait by +/- this fraction so pauses look less mechanical.
 SEARCH_COOLDOWN_JITTER = min(
     0.9, max(0.0, float(os.environ.get("SEARCH_COOLDOWN_JITTER", "0.3")))
 )
-# Proactive burst break: after every SEARCH_BURST_SIZE queries, pause
-# SEARCH_BURST_BREAK seconds before continuing. This resets DDG's session
-# context before it starts throttling, which is more effective than waiting
-# until timeouts start (the adaptive back-off above). 0 = disabled.
+# Proactive burst break: after every SEARCH_BURST_SIZE queries pause
+# SEARCH_BURST_BREAK seconds to reset DDG's session context. 0 = disabled.
 SEARCH_BURST_SIZE = max(0, int(os.environ.get("SEARCH_BURST_SIZE", "40")))
 SEARCH_BURST_BREAK = max(0.0, float(os.environ.get("SEARCH_BURST_BREAK", "300")))
+
+# === Serper pacing (used when SEARCH_BACKEND=serper) ===
+# Serper is a paid REST API (google.serper.dev) — far more reliable than DDG.
+# Defaults reflect Serper's own recommendations: fast pace, minimal jitter,
+# short cooldowns, no proactive burst breaks (they handle quota server-side).
+# Override any of these with SERPER_* env vars if needed.
+SERPER_SEARCH_INTERVAL = max(
+    0.0, float(os.environ.get("SERPER_SEARCH_INTERVAL", "1.0"))
+)
+# Small jitter (10%) is enough to avoid a perfectly mechanical cadence.
+SERPER_SEARCH_JITTER = min(
+    0.9, max(0.0, float(os.environ.get("SERPER_SEARCH_JITTER", "0.1")))
+)
+# Cooldown after a 429 / transient error: much shorter than DDG because Serper
+# recovers quickly and rarely rate-limits on paid plans.
+SERPER_SEARCH_COOLDOWN = max(
+    0.0, float(os.environ.get("SERPER_SEARCH_COOLDOWN", "5.0"))
+)
+SERPER_SEARCH_COOLDOWN_MAX = max(
+    SERPER_SEARCH_COOLDOWN,
+    float(os.environ.get("SERPER_SEARCH_COOLDOWN_MAX", "30.0")),
+)
+# Wait for more consecutive errors before cooling down (Serper errors are rare).
+SERPER_SEARCH_COOLDOWN_AFTER = max(
+    1, int(os.environ.get("SERPER_SEARCH_COOLDOWN_AFTER", "3"))
+)
+SERPER_SEARCH_COOLDOWN_JITTER = min(
+    0.9, max(0.0, float(os.environ.get("SERPER_SEARCH_COOLDOWN_JITTER", "0.2")))
+)
+# Burst breaks disabled by default for Serper — no need to protect against
+# session-based throttling that DDG applies. Set SERPER_SEARCH_BURST_SIZE > 0
+# to re-enable if you observe 429s on high-volume runs.
+SERPER_SEARCH_BURST_SIZE = max(
+    0, int(os.environ.get("SERPER_SEARCH_BURST_SIZE", "0"))
+)
+SERPER_SEARCH_BURST_BREAK = max(
+    0.0, float(os.environ.get("SERPER_SEARCH_BURST_BREAK", "0"))
+)
 
 # === IGB Live event profile URL ===
 # Base URL for attendee profile pages. The scraper appends the Swapcard person id

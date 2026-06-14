@@ -470,16 +470,21 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
 
 
 def _paced_sleep() -> None:
-    """Wait SEARCH_INTERVAL between searches, with optional +/- jitter.
+    """Wait between searches using the active backend's interval and jitter.
 
-    A perfectly steady drumbeat is the easiest pattern for DuckDuckGo to flag and
-    throttle, so we randomise each gap by SEARCH_JITTER to look less mechanical.
+    DDG needs a slow, heavily jittered cadence to avoid throttling.
+    Serper is a paid REST API — 1 s with minimal jitter is fine.
     """
-    base = config.SEARCH_INTERVAL
+    if config.SEARCH_BACKEND == "serper":
+        base = config.SERPER_SEARCH_INTERVAL
+        jitter = config.SERPER_SEARCH_JITTER
+    else:
+        base = config.SEARCH_INTERVAL
+        jitter = config.SEARCH_JITTER
     if base <= 0:
         return
-    if config.SEARCH_JITTER:
-        base *= 1 + random.uniform(-config.SEARCH_JITTER, config.SEARCH_JITTER)
+    if jitter:
+        base *= 1 + random.uniform(-jitter, jitter)
     time.sleep(max(0.0, base))
 
 
@@ -516,27 +521,40 @@ def _is_transient_search_error(exc: BaseException) -> bool:
 
 
 def _search_cooldown_seconds(consecutive_errors: int) -> float:
-    """Escalating pause after consecutive search failures, with random jitter."""
-    if consecutive_errors < config.SEARCH_COOLDOWN_AFTER:
+    """Escalating pause after consecutive search failures, with random jitter.
+
+    Uses the active backend's cooldown settings — Serper's are much shorter
+    than DDG's because the paid API recovers faster and errors are rarer.
+    """
+    if config.SEARCH_BACKEND == "serper":
+        cooldown_after = config.SERPER_SEARCH_COOLDOWN_AFTER
+        cooldown = config.SERPER_SEARCH_COOLDOWN
+        cooldown_max = config.SERPER_SEARCH_COOLDOWN_MAX
+        cooldown_jitter = config.SERPER_SEARCH_COOLDOWN_JITTER
+    else:
+        cooldown_after = config.SEARCH_COOLDOWN_AFTER
+        cooldown = config.SEARCH_COOLDOWN
+        cooldown_max = config.SEARCH_COOLDOWN_MAX
+        cooldown_jitter = config.SEARCH_COOLDOWN_JITTER
+    if consecutive_errors < cooldown_after:
         return 0.0
-    steps = consecutive_errors - config.SEARCH_COOLDOWN_AFTER + 1
-    base = min(config.SEARCH_COOLDOWN * steps, config.SEARCH_COOLDOWN_MAX)
-    if config.SEARCH_COOLDOWN_JITTER and base > 0:
-        base *= 1 + random.uniform(
-            -config.SEARCH_COOLDOWN_JITTER, config.SEARCH_COOLDOWN_JITTER
-        )
+    steps = consecutive_errors - cooldown_after + 1
+    base = min(cooldown * steps, cooldown_max)
+    if cooldown_jitter and base > 0:
+        base *= 1 + random.uniform(-cooldown_jitter, cooldown_jitter)
     return max(0.0, base)
 
 
 def _maybe_search_cooldown(consecutive_errors: int) -> None:
-    """Pause with visible logging when DuckDuckGo keeps failing."""
+    """Pause with visible logging when the search backend keeps failing."""
     cooldown = _search_cooldown_seconds(consecutive_errors)
     if cooldown <= 0:
         return
+    backend_label = "Serper" if config.SEARCH_BACKEND == "serper" else "DuckDuckGo"
     print(
         f"  [cool ] backing off {cooldown:.0f}s after "
         f"{consecutive_errors} consecutive search error(s) "
-        "to let DuckDuckGo recover."
+        f"to let {backend_label} recover."
     )
     time.sleep(cooldown)
 
@@ -758,21 +776,21 @@ def run() -> None:
             # DuckDuckGo answered cleanly — reset the back-off here (not after the
             # Notion write) so the streak reflects DDG health only, not Notion's.
             consecutive_errors = 0
-            # Proactive burst break: every SEARCH_BURST_SIZE queries we pause
-            # SEARCH_BURST_BREAK seconds before DDG starts throttling us. This
-            # is cheaper than waiting for timeouts to accumulate.
-            burst = config.SEARCH_BURST_SIZE
-            if (
-                burst > 0
-                and config.SEARCH_BURST_BREAK > 0
-                and lookups % burst == 0
-            ):
+            # Proactive burst break: pause every N queries to reset session
+            # context. Only relevant for DDG (Serper disables this by default).
+            if config.SEARCH_BACKEND == "serper":
+                burst = config.SERPER_SEARCH_BURST_SIZE
+                burst_break = config.SERPER_SEARCH_BURST_BREAK
+            else:
+                burst = config.SEARCH_BURST_SIZE
+                burst_break = config.SEARCH_BURST_BREAK
+            if burst > 0 and burst_break > 0 and lookups % burst == 0:
                 print(
                     f"\n  [burst] {lookups} searches done — pausing "
-                    f"{config.SEARCH_BURST_BREAK:.0f}s "
+                    f"{burst_break:.0f}s "
                     f"(proactive burst break for {backend_label})."
                 )
-                time.sleep(config.SEARCH_BURST_BREAK)
+                time.sleep(burst_break)
                 print("  [burst] Resuming.\n")
             # Stamp the outcome either way: a verified URL -> "Yes"; no confident
             # match -> "Skipped" (LinkedIn stays empty, never retried).
