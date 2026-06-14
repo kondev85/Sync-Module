@@ -99,6 +99,12 @@ EXPECTED_TYPES = {
 _schema_cache: dict | None = None
 
 
+def clear_schema_cache() -> None:
+    """Drop cached database schema (e.g. after switching NOTION_DATABASE_ID)."""
+    global _schema_cache
+    _schema_cache = None
+
+
 def get_schema() -> dict:
     """Fetch (and cache) the target database's {property_name: type} map."""
     global _schema_cache
