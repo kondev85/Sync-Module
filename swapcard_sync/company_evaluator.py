@@ -300,23 +300,132 @@ def assess_company(client: genai.Client, company: str, role: str, snippet: str) 
     return {"category": category, "score": score, "rationale": rationale}
 
 
-# ── Company-level deduplication ───────────────────────────────────────────────
+# ── Company-level deduplication (fuzzy name matching) ────────────────────────
 
-def _normalise_company(name: str) -> str:
-    """Lowercase + collapse whitespace so minor variations group together."""
-    return re.sub(r"\s+", " ", (name or "").lower().strip())
+# Legal / generic suffixes stripped before comparing company names.
+# These carry no identity signal and differ freely across data entry styles.
+_LEGAL_SUFFIXES = {
+    "ltd", "limited", "inc", "incorporated", "llc", "llp", "lp",
+    "plc", "gmbh", "ag", "sa", "srl", "bv", "oy", "ab", "as", "kft",
+    "corp", "corporation", "co",
+    "group", "groups", "holding", "holdings",
+    "international", "intl",
+    "the",
+}
+
+
+def _canonical_tokens(name: str) -> frozenset[str]:
+    """Return a frozenset of normalised, suffix-stripped tokens for a company name.
+
+    Steps:
+      1. Lowercase and replace punctuation with spaces.
+      2. Split into words; drop very short noise tokens (1 char).
+      3. Remove legal/generic suffixes (ltd, group, holdings, …).
+      4. Return as frozenset for fast subset checks.
+
+    Examples:
+      "FDJ United"  → {"fdj", "united"}
+      "FDJ UNITED"  → {"fdj", "united"}   ← same as above
+      "FDJ"         → {"fdj"}             ← subset of above
+      "Company Ltd" → {"company"}
+      "Company"     → {"company"}         ← same canonical key
+    """
+    clean = re.sub(r"[^\w\s]", " ", (name or "").lower())
+    tokens = [t for t in clean.split() if len(t) > 1 and t not in _LEGAL_SUFFIXES]
+    return frozenset(tokens)
+
+
+def _companies_match(a: frozenset, b: frozenset) -> bool:
+    """True when two companies should be treated as the same entity.
+
+    Rules (conservative — prefer false negatives over false positives):
+    1. Identical token sets → always match.
+       ("FDJ United" == "FDJ UNITED" after normalisation.)
+    2. Strict subset → match ONLY when:
+       a) The shorter set has ≥ 1 token of at least 3 chars (so "co" alone
+          never merges unrelated companies), AND
+       b) The longer set has at most 2 more tokens than the shorter
+          (keeps "FDJ" merging into "FDJ United" but stops "FDJ" accidentally
+          merging with "FDJ United Kingdom Lottery Division International").
+
+    Counter-example that is safely rejected:
+      "Scientific Games"   → {"scientific", "games"}
+      "Scientific Industries" → {"scientific", "industries"}
+      Neither is a subset of the other → NOT merged. ✓
+    """
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if not shorter.issubset(longer):
+        return False
+    # Safety guard 1: require at least one substantive token (≥3 chars)
+    if not any(len(t) >= 3 for t in shorter):
+        return False
+    # Safety guard 2: cap how many extra tokens the longer name may have
+    if len(longer) - len(shorter) > 2:
+        return False
+    return True
 
 
 def _group_by_company(contacts: list[dict]) -> dict[str, list[dict]]:
-    """Group contacts by normalised company name.
+    """Group contacts into clusters where all members share the same company.
 
-    Contacts with no company name are each put in their own singleton group
-    keyed by page_id so they still get evaluated individually.
+    Uses a union-find over canonical token sets to merge entries that refer to
+    the same company despite variations in capitalisation, punctuation, and
+    legal suffixes (e.g. "FDJ" / "FDJ United" / "FDJ UNITED" / "Company Ltd" /
+    "Company").
+
+    Contacts with no company name are each placed in their own singleton group
+    (keyed by page_id) so they are still evaluated individually.
     """
-    groups: dict[str, list[dict]] = {}
+    # ── Assign each contact a canonical token set ──────────────────────────
+    labelled: list[tuple[str, frozenset, dict]] = []  # (raw_company, tokens, contact)
     for c in contacts:
-        key = _normalise_company(c["company"]) or f"__no_company_{c['page_id']}"
-        groups.setdefault(key, []).append(c)
+        raw = (c["company"] or "").strip()
+        if raw:
+            labelled.append((raw, _canonical_tokens(raw), c))
+        else:
+            # No company — singleton keyed by page_id, evaluated alone
+            labelled.append(("", frozenset(), c))
+
+    # ── Union-find ─────────────────────────────────────────────────────────
+    n = len(labelled)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        parent[find(i)] = find(j)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            _, ti, _ = labelled[i]
+            _, tj, _ = labelled[j]
+            if ti and tj and _companies_match(ti, tj):
+                union(i, j)
+
+    # ── Build groups keyed by the longest company name in each cluster ─────
+    # (Longest name is most descriptive — use it as the display label.)
+    clusters: dict[int, list[tuple[str, dict]]] = {}
+    for idx, (raw, _, contact) in enumerate(labelled):
+        root = find(idx)
+        clusters.setdefault(root, []).append((raw, contact))
+
+    groups: dict[str, list[dict]] = {}
+    for members in clusters.values():
+        # Pick the longest original name as the representative key
+        rep_name = max((raw for raw, _ in members if raw), key=len, default="")
+        if not rep_name:
+            # All members had no company — give each its own singleton group
+            for _, contact in members:
+                groups[f"__no_company_{contact['page_id']}"] = [contact]
+            continue
+        groups[rep_name] = [contact for _, contact in members]
+
     return groups
 
 
