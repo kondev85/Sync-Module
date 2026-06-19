@@ -126,18 +126,36 @@ def _rich_text_value(prop: dict | None) -> str:
 
 
 def _build_filter() -> dict:
-    """Return rows where AI Evaluation text column is blank."""
+    """Return rows where AI Evaluation is blank AND Company is not empty.
+
+    Filtering out no-company rows server-side means they never enter the queue,
+    the cap (MAX_EVALUATIONS) only counts actionable rows, and no Skipped stamps
+    are written for contacts whose company is simply not filled in yet.
+    """
     schema = notion_sync.get_schema()
-    eval_type = schema.get(PROP_AI_EVAL)
+    eval_type    = schema.get(PROP_AI_EVAL)
+    company_type = schema.get(config.PROP_COMPANY)
+
     if eval_type == "rich_text":
-        return {"property": PROP_AI_EVAL, "rich_text": {"is_empty": True}}
-    if eval_type == "title":
-        return {"property": PROP_AI_EVAL, "title": {"is_empty": True}}
-    # Column missing — surface a clear error before touching any data.
-    raise RuntimeError(
-        f"Property '{PROP_AI_EVAL}' not found or wrong type (got {eval_type!r}). "
-        "Add a Text column named 'AI Evaluation' to your Notion database."
-    )
+        eval_empty = {"property": PROP_AI_EVAL, "rich_text": {"is_empty": True}}
+    elif eval_type == "title":
+        eval_empty = {"property": PROP_AI_EVAL, "title": {"is_empty": True}}
+    else:
+        raise RuntimeError(
+            f"Property '{PROP_AI_EVAL}' not found or wrong type (got {eval_type!r}). "
+            "Add a Text column named 'AI Evaluation' to your Notion database."
+        )
+
+    # Also require Company to be filled — no point evaluating a nameless company.
+    if company_type in ("rich_text", "title"):
+        company_not_empty = {
+            "property": config.PROP_COMPANY,
+            company_type: {"is_not_empty": True},
+        }
+        return {"and": [eval_empty, company_not_empty]}
+
+    # Company column missing or unexpected type — fall back to eval-only filter
+    return eval_empty
 
 
 def fetch_unevaluated() -> list[dict]:
