@@ -8,6 +8,7 @@ import time
 import requests
 
 import config
+import company_evaluator
 import linkedin_enricher
 import notion_sync
 
@@ -460,6 +461,43 @@ def _run_enricher_interactive() -> None:
     linkedin_enricher.run()
 
 
+def _run_evaluator_interactive() -> None:
+    """Prompt for an optional batch cap, then run the AI company evaluator."""
+    print()
+    current = company_evaluator.MAX_EVALUATIONS
+    if current == 0:
+        suggestion = "0 (unlimited — full list)"
+    else:
+        suggestion = str(current)
+
+    print(f"  Current evaluation cap (MAX_EVALUATIONS): {suggestion}")
+    print("  Enter a number to cap this run, or press Enter to keep current.")
+    print("  Type 0 or 'all' to process every unevaluated row.")
+    try:
+        raw = input("  Batch size [Enter = keep current]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return
+
+    if raw in ("", ):
+        pass
+    elif raw in ("0", "all", "none", "unlimited"):
+        company_evaluator.MAX_EVALUATIONS = 0
+        print("  No cap — will process the full list.")
+    else:
+        try:
+            val = int(raw)
+            if val < 0:
+                raise ValueError
+            company_evaluator.MAX_EVALUATIONS = val
+            print(f"  Batch size set to {val} for this run.")
+        except ValueError:
+            print(f"  Invalid input {raw!r} — keeping current cap ({suggestion}).")
+
+    print()
+    company_evaluator.run()
+
+
 def main() -> None:
     """Present a simple CLI menu to pick which job to run.
 
@@ -472,27 +510,34 @@ def main() -> None:
     if config.RUN_MODE in ("2", "enricher", "linkedin"):
         linkedin_enricher.run()
         return
+    if config.RUN_MODE in ("3", "evaluator", "ai"):
+        company_evaluator.run()
+        return
 
     print("=" * 60)
     print("  iGB Live — Contact Tools")
     print("=" * 60)
     print("  [1] Run iGB Live Event Scraper & Sync")
     print("  [2] Run Missing LinkedIn Profiles Finder & Enricher")
+    print("  [3] Run AI Company Evaluator (BlocksRace lead qualifier)")
     print("-" * 60)
 
     try:
-        choice = input("Select an option [1/2]: ").strip()
+        choice = input("Select an option [1/2/3]: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nNo selection made. Exiting. "
-              "(Tip: set RUN_MODE=scraper or RUN_MODE=enricher for non-interactive runs.)")
+              "(Tip: set RUN_MODE=scraper, RUN_MODE=enricher, or RUN_MODE=evaluator "
+              "for non-interactive runs.)")
         return
 
     if choice == "1":
         run()
     elif choice == "2":
         _run_enricher_interactive()
+    elif choice == "3":
+        _run_evaluator_interactive()
     else:
-        print(f"Unknown option {choice!r}. Please run again and choose 1 or 2.")
+        print(f"Unknown option {choice!r}. Please run again and choose 1, 2, or 3.")
 
 
 if __name__ == "__main__":

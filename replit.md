@@ -8,7 +8,7 @@ _Replace the heading above with the project's name, and this line with one sente
 
 Run from a **Shell tab** (foreground), not from the Agent — the Agent sandbox kills long-running processes after ~120s. A full ~5000-attendee run takes 1–2 hours.
 
-`python -u main.py` now shows an interactive menu: **[1]** Scraper & Sync, **[2]** Missing LinkedIn Finder & Enricher. For scripted/non-interactive runs, set `RUN_MODE=scraper` or `RUN_MODE=enricher` to skip the menu (the run commands below all run interactively — just press `1`, or prepend `RUN_MODE=scraper`).
+`python -u main.py` now shows an interactive menu: **[1]** Scraper & Sync, **[2]** Missing LinkedIn Finder & Enricher, **[3]** AI Company Evaluator. For scripted/non-interactive runs, set `RUN_MODE=scraper`, `RUN_MODE=enricher`, or `RUN_MODE=evaluator` to skip the menu.
 
 - Full run (recommended pacing): `cd swapcard_sync && ENRICH_PROFILES=1 ROW_INSERT_INTERVAL=0.6 python -u main.py`
 - Resume after an interruption: add `SKIP_CONTACTS=<last index shown in logs minus ~20>` — a small overlap is safe (dedup updates, never duplicates) and avoids gaps if Swapcard's list order drifted.
