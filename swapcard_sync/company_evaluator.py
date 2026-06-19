@@ -540,7 +540,7 @@ def run() -> None:
 
     client = _gemini_client()
 
-    done = stamped_from_cache = errors = 0
+    done = stamped_from_cache = skipped = errors = 0
     company_num = 0
 
     for key, group in groups.items():
