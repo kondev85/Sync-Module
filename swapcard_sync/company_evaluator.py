@@ -222,38 +222,92 @@ def _write_result(page_id: str, category: str, score: int, rationale: str, statu
     resp.raise_for_status()
 
 
-# ── DuckDuckGo search ─────────────────────────────────────────────────────────
+# ── Web search for company context ───────────────────────────────────────────
 
-def _ddg_snippet(company: str) -> str:
-    """Return a short text snippet about the company from DuckDuckGo.
+def _results_to_snippet(results: list) -> str:
+    """Flatten a list of search result dicts into a single ≤800-char snippet."""
+    parts = []
+    for r in results[:3]:
+        title = r.get("title", "") or r.get("title", "")
+        body  = r.get("body",  "") or r.get("snippet", "")
+        if title:
+            parts.append(title)
+        if body:
+            parts.append(body)
+    return " | ".join(parts)[:800]
 
-    Tries two queries: an iGaming-flavoured search first (to surface industry
-    signals quickly), then a plain name-only fallback. Returns the concatenated
-    titles + bodies of the top 3 results (≤800 chars), or an empty string on
-    failure. Failures are non-fatal — Gemini still runs with less context.
+
+def _ddg_snippet(query: str) -> str | None:
+    """Try one DuckDuckGo query; return snippet string or None on failure."""
+    try:
+        with DDGS(timeout=20) as ddgs:
+            results = ddgs.text(query, max_results=5) or []
+        if results:
+            return _results_to_snippet(results)
+    except (RatelimitException, TimeoutException, DDGSException, Exception):
+        pass
+    return None
+
+
+def _serper_snippet(query: str) -> str | None:
+    """Try one Serper.dev query; return snippet string or None on failure.
+
+    Only attempted when SERPER_API_KEY is set — silently skipped otherwise.
     """
-    queries = [
-        f'"{company}" casino OR sportsbook OR betting OR iGaming',
-        f'"{company}"',
-    ]
-    for query in queries:
-        try:
-            with DDGS(timeout=20) as ddgs:
-                results = ddgs.text(query, max_results=5) or []
-            if results:
-                parts = []
-                for r in results[:3]:
-                    title = r.get("title", "")
-                    body  = r.get("body",  "")
-                    if title:
-                        parts.append(title)
-                    if body:
-                        parts.append(body)
-                snippet = " | ".join(parts)
-                return snippet[:800]
-        except (RatelimitException, TimeoutException, DDGSException, Exception):
-            pass
-        time.sleep(2)
+    if not config.SERPER_API_KEY:
+        return None
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": config.SERPER_API_KEY, "Content-Type": "application/json"},
+            json={"q": query, "num": 5},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        organic = resp.json().get("organic") or []
+        if organic:
+            # Normalise to the same shape as DDG results
+            normalised = [
+                {"title": r.get("title", ""), "body": r.get("snippet", "")}
+                for r in organic
+            ]
+            return _results_to_snippet(normalised)
+    except Exception:
+        pass
+    return None
+
+
+def _search_snippet(company: str) -> str:
+    """Return a short business-context snippet for a company name.
+
+    Strategy (most to least reliable):
+      1. DuckDuckGo — iGaming-flavoured query (best signal for our use-case)
+      2. DuckDuckGo — plain name-only fallback
+      3. Serper.dev — iGaming query (if SERPER_API_KEY is set)
+      4. Serper.dev — plain name-only (if SERPER_API_KEY is set)
+
+    Returns an empty string if every attempt fails — Gemini still runs
+    but with less context and will default to a lower confidence score.
+    """
+    igaming_query = f'"{company}" casino OR sportsbook OR betting OR iGaming'
+    plain_query   = f'"{company}"'
+
+    # ── DuckDuckGo first (free) ──────────────────────────────────────────────
+    for query in (igaming_query, plain_query):
+        snippet = _ddg_snippet(query)
+        if snippet:
+            return snippet
+        time.sleep(1)   # brief pause between DDG attempts
+
+    # ── Serper fallback (paid, if key is set) ────────────────────────────────
+    if config.SERPER_API_KEY:
+        for query in (igaming_query, plain_query):
+            snippet = _serper_snippet(query)
+            if snippet:
+                print("  [search] DDG failed — used Serper fallback.")
+                return snippet
+            time.sleep(0.5)
+
     return ""
 
 
@@ -265,8 +319,20 @@ GEMINI_MAX_RETRIES = max(1, int(os.environ.get("GEMINI_MAX_RETRIES", "5")))
 
 
 def _gemini_client() -> genai.Client:
+    """Create a Gemini client always using GEMINI_API_KEY.
+
+    The google-genai SDK prefers GOOGLE_API_KEY over GEMINI_API_KEY when both
+    env vars exist, which can route calls to the wrong project/quota. We
+    temporarily hide GOOGLE_API_KEY so the SDK uses our explicit key.
+    """
     api_key = os.environ.get("GEMINI_API_KEY", "")
-    return genai.Client(api_key=api_key)
+    shadowed = os.environ.pop("GOOGLE_API_KEY", None)
+    try:
+        client = genai.Client(api_key=api_key)
+    finally:
+        if shadowed is not None:
+            os.environ["GOOGLE_API_KEY"] = shadowed
+    return client
 
 
 def _parse_retry_delay(exc: Exception) -> float | None:
@@ -591,8 +657,8 @@ def run() -> None:
 
         print(label)
 
-        # ── DuckDuckGo snippet ──────────────────────────────────────────────
-        snippet = _ddg_snippet(company)
+        # ── Web search snippet (DDG → Serper fallback) ─────────────────────
+        snippet = _search_snippet(company)
         print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''}")
 
         # ── Gemini assessment ───────────────────────────────────────────────
