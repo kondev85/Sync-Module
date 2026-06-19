@@ -45,7 +45,7 @@ PROP_AI_RATIONALE = "AI Rationale"    # Text
 # ── Run settings ──────────────────────────────────────────────────────────────
 MAX_EVALUATIONS = max(0, int(os.environ.get("MAX_EVALUATIONS", "0")))  # 0 = unlimited
 EVAL_INTERVAL   = max(0.0, float(os.environ.get("EVAL_INTERVAL", "3.0")))
-GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
 # ── Category labels ───────────────────────────────────────────────────────────
 CATEGORY_CASINO    = "Casino Operator"
@@ -241,32 +241,87 @@ def _ddg_snippet(company: str) -> str:
 
 # ── Gemini AI assessment ──────────────────────────────────────────────────────
 
+# Max retries when Gemini returns a 429 (rate limit). The script reads the
+# retryDelay from the error body and waits exactly that long before retrying.
+GEMINI_MAX_RETRIES = max(1, int(os.environ.get("GEMINI_MAX_RETRIES", "5")))
+
+
 def _gemini_client() -> genai.Client:
     api_key = os.environ.get("GEMINI_API_KEY", "")
     return genai.Client(api_key=api_key)
+
+
+def _parse_retry_delay(exc: Exception) -> float | None:
+    """Extract the retryDelay seconds from a Gemini 429 error, if present.
+
+    The google-genai SDK wraps the API error as an Exception whose str()
+    contains the raw JSON body. We look for 'retryDelay': '21s' or similar.
+    Returns None when no delay can be found (caller falls back to a default).
+    """
+    blob = str(exc)
+    match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?\s*(\d+(?:\.\d+)?)\s*s", blob)
+    if match:
+        return float(match.group(1))
+    # Also handle plain integer seconds in the message text
+    match = re.search(r"retry in (\d+(?:\.\d+)?)\s*s", blob, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _is_gemini_rate_limit(exc: Exception) -> bool:
+    """True when the exception is a Gemini 429 RESOURCE_EXHAUSTED."""
+    blob = str(exc).lower()
+    return "429" in blob or "resource_exhausted" in blob or "rate" in blob
+
+
+def _call_gemini(client: genai.Client, user_message: str) -> str:
+    """Call Gemini with automatic retry on 429, honouring the retryDelay.
+
+    Waits exactly as long as Gemini asks (retryDelay in the error body),
+    falling back to an escalating default if no delay is specified.
+    Raises the last exception after GEMINI_MAX_RETRIES attempts.
+    """
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user_message,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=_SYSTEM_PROMPT,
+                    temperature=0.1,
+                    max_output_tokens=256,
+                ),
+            )
+            return (response.text or "").strip()
+        except Exception as exc:
+            if not _is_gemini_rate_limit(exc) or attempt >= GEMINI_MAX_RETRIES:
+                raise
+            delay = _parse_retry_delay(exc)
+            if delay is None:
+                delay = 30.0 * (attempt + 1)   # escalating fallback: 30s, 60s, 90s…
+            # Add a small jitter so parallel runs don't all retry in sync
+            delay += random.uniform(1, 5)
+            print(
+                f"  [gemini] 429 rate limit — waiting {delay:.0f}s then retrying "
+                f"(attempt {attempt + 1}/{GEMINI_MAX_RETRIES})…"
+            )
+            time.sleep(delay)
+    raise RuntimeError("Gemini retry limit exceeded")  # unreachable but makes mypy happy
 
 
 def assess_company(client: genai.Client, company: str, role: str, snippet: str) -> dict:
     """Send company info to Gemini and parse the JSON response.
 
     Returns a dict with keys: category, score, rationale.
-    Raises ValueError if Gemini returns unparseable output.
+    Raises on unrecoverable errors (caller decides whether to stamp Skipped).
     """
     user_message = (
         f"Company: {company or '(unknown)'}\n"
         f"Contact role: {role or '(unknown)'}\n"
         f"Web context: {snippet or '(no search results found)'}"
     )
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user_message,
-        config=genai_types.GenerateContentConfig(
-            system_instruction=_SYSTEM_PROMPT,
-            temperature=0.1,
-            max_output_tokens=256,
-        ),
-    )
-    raw = (response.text or "").strip()
+    raw = _call_gemini(client, user_message)
 
     # Strip any accidental markdown fences
     raw = re.sub(r"^```[a-z]*\n?", "", raw, flags=re.IGNORECASE)
@@ -491,8 +546,25 @@ def run() -> None:
     for key, group in groups.items():
         company_num += 1
         # Use the first contact's company name as display label (original case)
-        company = group[0]["company"] or group[0]["name"] or "(unknown)"
+        company = group[0]["company"] or ""
         role    = group[0]["role"]  # role of the first contact (for context)
+
+        # Skip rows with no company — evaluating a person's name as a company
+        # is meaningless and wastes API quota. Stamp them Skipped so they
+        # don't re-appear on every run (a human can clear the stamp if the
+        # company is later filled in).
+        if not company:
+            names = ", ".join(c["name"] or "(no name)" for c in group)
+            print(f"[company {company_num}/{len(groups)}] (no company name) → {names}")
+            print("  Skipping — company field is empty.")
+            for contact in group:
+                try:
+                    _write_result(contact["page_id"], CATEGORY_UNRELATED, 1,
+                                  "No company name — cannot evaluate.", "Skipped")
+                except Exception:
+                    pass
+            skipped += len(group)
+            continue
 
         n_contacts = len(group)
         label = f"[company {company_num}/{len(groups)}] {company}"

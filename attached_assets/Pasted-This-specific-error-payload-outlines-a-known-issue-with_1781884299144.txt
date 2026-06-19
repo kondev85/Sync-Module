@@ -1,0 +1,24 @@
+This specific error payload outlines a known issue with the platform's configuration. Looking closely at the RESOURCE_EXHAUSTED log, Google is explicitly reporting:
+
+quotaMetric: ...free_tier_requests, limit: 0, model: gemini-2.0-flash
+
+A normal rate limit block would show your limit as something like 15 or 1000 and throw an error because you used them up too fast. Seeing a limit of exactly 0 means Google’s backend has completely throttled API key generation on your Workspace domain project.
+
+This occurs because Google rolled out strict backend policy updates. To prevent mass automated data scraping from free accounts, new API keys created on unbilled Google projects are initialized with a hard limit of 0 tokens across all gemini-2.0 and gemini-3.x models until an identity or billing layer is validated.
+
+Fortunately, you do not have to spend a dime to completely clear this. Here are the two clean paths to unblock your Replit script immediately:
+
+Option 1: Switch to a Free-Tier Model That Isn't Set to 0
+Google applied the strict zero-quota rule primarily to their flagships like gemini-2.0-flash. Their lighter, hyper-optimized models meant for high-volume text analysis often bypass this initial gate block.
+
+Go into your Replit code where the Gemini client is initialized (most likely inside company_evaluator.py).
+
+Change the target model name string from gemini-2.0-flash to:
+👉 gemini-2.0-flash-lite or gemini-2.5-flash
+
+Re-run your script. If the request goes through, you are entirely good to go with those models.
+
+Option 2: The "Pay-As-You-Go" Safety Pass (Recommended)
+To permanently unlock the true free-tier quotas (1,500 free requests per day), you simply need to link a Google Cloud Billing Account to your Google AI Studio developer project.
+
+Linking billing instantly switches your account from an unverified free trial to a "Pay-As-You-Go Tier 1" account. It still keeps your daily free usage allotments completely intact, but it removes the 0 limit restriction completely.
