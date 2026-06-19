@@ -2,17 +2,22 @@
 
 For each Notion row where 'AI Evaluation' is blank:
   1. Grab Company Name + Role from the row.
-  2. Search DuckDuckGo for a short business-context snippet.
-  3. Send that context to Gemini Flash (free tier) with a strict system prompt.
-  4. Gemini returns: category, score (1-5), rationale (1 sentence).
-  5. Write those three values back to Notion + stamp 'AI Evaluation = Done'.
+  2. Group contacts by company — evaluate each company ONCE, then apply the
+     same result to every person at that company (no duplicate API calls).
+  3. Search DuckDuckGo for a short business-context snippet.
+  4. Send that context to Gemini Flash with a strict system prompt.
+  5. Gemini returns: category, score (1-5), rationale (1 sentence).
+  6. Write those three values back to Notion + stamp 'AI Evaluation = Done'.
+
+All four AI columns are plain Text in Notion (rich_text), so no special
+column types are required.
 
 Run from the Shell (not the Agent sandbox — long runs need a real terminal):
   cd swapcard_sync && python -u company_evaluator.py
 
 Env toggles:
   MAX_EVALUATIONS  — cap how many rows to process this run (0 = unlimited)
-  EVAL_INTERVAL    — seconds between rows (default 3.0)
+  EVAL_INTERVAL    — seconds between company evaluations (default 3.0)
   GEMINI_MODEL     — which Gemini model to use (default gemini-2.0-flash)
 """
 
@@ -31,21 +36,21 @@ from google.genai import types as genai_types
 import config
 import notion_sync
 
-# ── Column names (must match Notion DB exactly) ─────────────────────────────
-PROP_AI_EVAL     = "AI Evaluation"   # select — gate: blank → process, Done/Skipped → skip
-PROP_AI_CATEGORY = "AI Category"     # select
-PROP_AI_SCORE    = "AI Score"        # number
-PROP_AI_RATIONALE = "AI Rationale"  # rich_text
+# ── Column names (must match Notion DB exactly — all are plain Text) ──────────
+PROP_AI_EVAL      = "AI Evaluation"   # Text — blank = unprocessed, "Done"/"Skipped" = done
+PROP_AI_CATEGORY  = "AI Category"     # Text
+PROP_AI_SCORE     = "AI Score"        # Text  (stored as "4/5" so it's human-readable)
+PROP_AI_RATIONALE = "AI Rationale"    # Text
 
-# ── Run settings ─────────────────────────────────────────────────────────────
+# ── Run settings ──────────────────────────────────────────────────────────────
 MAX_EVALUATIONS = max(0, int(os.environ.get("MAX_EVALUATIONS", "0")))  # 0 = unlimited
 EVAL_INTERVAL   = max(0.0, float(os.environ.get("EVAL_INTERVAL", "3.0")))
 GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
-# ── Category labels (must match the Notion select options you create) ─────────
-CATEGORY_CASINO   = "Casino Operator"
-CATEGORY_CRYPTO   = "Crypto / VC"
-CATEGORY_TECH     = "Strategic Tech Partner"
+# ── Category labels ───────────────────────────────────────────────────────────
+CATEGORY_CASINO    = "Casino Operator"
+CATEGORY_CRYPTO    = "Crypto / VC"
+CATEGORY_TECH      = "Strategic Tech Partner"
 CATEGORY_UNRELATED = "Unrelated"
 
 VALID_CATEGORIES = {CATEGORY_CASINO, CATEGORY_CRYPTO, CATEGORY_TECH, CATEGORY_UNRELATED}
@@ -112,26 +117,31 @@ def _plain_text(prop: dict | None) -> str:
     return "".join(p.get("plain_text", "") for p in parts).strip()
 
 
+def _rich_text_value(prop: dict | None) -> str:
+    """Read a rich_text column value as a plain string."""
+    if not prop:
+        return ""
+    parts = prop.get("rich_text") or []
+    return "".join(p.get("plain_text", "") for p in parts).strip()
+
+
 def _build_filter() -> dict:
-    """Return rows where AI Evaluation is blank (never processed)."""
+    """Return rows where AI Evaluation text column is blank."""
     schema = notion_sync.get_schema()
     eval_type = schema.get(PROP_AI_EVAL)
-    if eval_type in ("select", "status"):
-        return {
-            "property": PROP_AI_EVAL,
-            eval_type: {"is_empty": True},
-        }
-    # Column missing or wrong type — surface a clear error rather than
-    # silently processing everything.
+    if eval_type == "rich_text":
+        return {"property": PROP_AI_EVAL, "rich_text": {"is_empty": True}}
+    if eval_type == "title":
+        return {"property": PROP_AI_EVAL, "title": {"is_empty": True}}
+    # Column missing — surface a clear error before touching any data.
     raise RuntimeError(
         f"Property '{PROP_AI_EVAL}' not found or wrong type (got {eval_type!r}). "
-        "Create a 'Select' property named 'AI Evaluation' in your Notion database "
-        "with options: Done, Skipped."
+        "Add a Text column named 'AI Evaluation' to your Notion database."
     )
 
 
 def fetch_unevaluated() -> list[dict]:
-    """Page through the DB and return rows where AI Evaluation is blank."""
+    """Page through the DB and return all rows where AI Evaluation is blank."""
     url = f"{config.NOTION_API_URL}/databases/{config.NOTION_DATABASE_ID}/query"
     body_base = {"filter": _build_filter(), "page_size": 100}
     contacts: list[dict] = []
@@ -160,29 +170,33 @@ def fetch_unevaluated() -> list[dict]:
 
 
 def _write_result(page_id: str, category: str, score: int, rationale: str, status: str) -> None:
-    """Patch AI Category, AI Score, AI Rationale, and AI Evaluation onto a row."""
+    """Patch all four AI text columns onto a Notion row."""
     schema = notion_sync.get_schema()
+
+    def _rt(text: str) -> dict:
+        return {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+
+    def _title_rt(text: str) -> dict:
+        return {"title": [{"type": "text", "text": {"content": text[:2000]}}]}
+
     properties: dict = {}
 
-    if schema.get(PROP_AI_CATEGORY) == "select":
-        properties[PROP_AI_CATEGORY] = {"select": {"name": category}}
-
-    if schema.get(PROP_AI_SCORE) == "number":
-        properties[PROP_AI_SCORE] = {"number": score}
-
-    if schema.get(PROP_AI_RATIONALE) in ("rich_text", "text"):
-        properties[PROP_AI_RATIONALE] = {
-            "rich_text": [{"type": "text", "text": {"content": rationale[:2000]}}]
-        }
-
-    eval_type = schema.get(PROP_AI_EVAL)
-    if eval_type == "select":
-        properties[PROP_AI_EVAL] = {"select": {"name": status}}
-    elif eval_type == "status":
-        properties[PROP_AI_EVAL] = {"status": {"name": status}}
+    for prop, value in [
+        (PROP_AI_CATEGORY,  category),
+        (PROP_AI_SCORE,     f"{score}/5"),
+        (PROP_AI_RATIONALE, rationale),
+        (PROP_AI_EVAL,      status),
+    ]:
+        ptype = schema.get(prop)
+        if ptype == "rich_text":
+            properties[prop] = _rt(value)
+        elif ptype == "title":
+            properties[prop] = _title_rt(value)
+        # If the column is missing entirely, we silently skip it so one missing
+        # column doesn't abort writes to the three that do exist.
 
     if not properties:
-        print("  [eval ] WARNING: no writable AI columns found — check your Notion schema.")
+        print(f"  [eval ] WARNING: no writable AI columns found for page {page_id}.")
         return
 
     url = f"{config.NOTION_API_URL}/pages/{page_id}"
@@ -195,9 +209,9 @@ def _write_result(page_id: str, category: str, score: int, rationale: str, statu
 def _ddg_snippet(company: str) -> str:
     """Return a short text snippet about the company from DuckDuckGo.
 
-    Tries two queries: one iGaming-flavoured (to surface industry signals
-    quickly), then a plain name-only fallback. Returns the concatenated
-    titles + bodies of the top 3 results (≤800 chars), or empty string on
+    Tries two queries: an iGaming-flavoured search first (to surface industry
+    signals quickly), then a plain name-only fallback. Returns the concatenated
+    titles + bodies of the top 3 results (≤800 chars), or an empty string on
     failure. Failures are non-fatal — Gemini still runs with less context.
     """
     queries = [
@@ -268,7 +282,6 @@ def assess_company(client: genai.Client, company: str, role: str, snippet: str) 
     rationale = str(result.get("rationale", "")).strip()
 
     if category not in VALID_CATEGORIES:
-        # Best-effort fuzzy match before giving up
         for valid in VALID_CATEGORIES:
             if valid.lower().split()[0] in category.lower():
                 category = valid
@@ -287,6 +300,26 @@ def assess_company(client: genai.Client, company: str, role: str, snippet: str) 
     return {"category": category, "score": score, "rationale": rationale}
 
 
+# ── Company-level deduplication ───────────────────────────────────────────────
+
+def _normalise_company(name: str) -> str:
+    """Lowercase + collapse whitespace so minor variations group together."""
+    return re.sub(r"\s+", " ", (name or "").lower().strip())
+
+
+def _group_by_company(contacts: list[dict]) -> dict[str, list[dict]]:
+    """Group contacts by normalised company name.
+
+    Contacts with no company name are each put in their own singleton group
+    keyed by page_id so they still get evaluated individually.
+    """
+    groups: dict[str, list[dict]] = {}
+    for c in contacts:
+        key = _normalise_company(c["company"]) or f"__no_company_{c['page_id']}"
+        groups.setdefault(key, []).append(c)
+    return groups
+
+
 # ── Main run loop ─────────────────────────────────────────────────────────────
 
 def run() -> None:
@@ -295,74 +328,93 @@ def run() -> None:
 
     print("\n=== Company Evaluator (BlocksRace lead qualifier) ===")
     print(f"Model : {GEMINI_MODEL}")
-    print(f"Pacing: {EVAL_INTERVAL}s between rows")
+    print(f"Pacing: {EVAL_INTERVAL}s between company evaluations")
     if MAX_EVALUATIONS:
         print(f"Cap   : {MAX_EVALUATIONS} rows this run")
     print()
 
-    # ── Check schema up front ──────────────────────────────────────────────
+    # ── Schema check ──────────────────────────────────────────────────────────
     schema = notion_sync.get_schema()
     missing_cols = []
-    for col, expected in [
-        (PROP_AI_EVAL,      ("select", "status")),
-        (PROP_AI_CATEGORY,  ("select",)),
-        (PROP_AI_SCORE,     ("number",)),
-        (PROP_AI_RATIONALE, ("rich_text", "text")),
-    ]:
-        actual = schema.get(col)
-        if actual not in expected:
-            missing_cols.append(f"  '{col}' (need {expected}, got {actual!r})")
+    for col in [PROP_AI_EVAL, PROP_AI_CATEGORY, PROP_AI_SCORE, PROP_AI_RATIONALE]:
+        if schema.get(col) not in ("rich_text", "title", "text"):
+            missing_cols.append(
+                f"  '{col}' (type is {schema.get(col)!r} — needs to be a Text column)"
+            )
     if missing_cols:
         print("WARNING — the following Notion columns are missing or wrong type:")
         for m in missing_cols:
             print(m)
-        print(
-            "\nPlease add them in Notion before running a full batch. "
-            "See the instructions at the top of this file.\n"
-        )
+        print()
 
     print("Fetching unevaluated rows from Notion…")
     contacts = fetch_unevaluated()
-    total = len(contacts)
-    print(f"Found {total} rows to evaluate.\n")
+    total_rows = len(contacts)
+    print(f"Found {total_rows} unevaluated rows.")
 
     if not contacts:
         print("Nothing to do — all rows already have an AI Evaluation stamp.")
         return
 
+    # Group by company — evaluate each company once, stamp all its contacts
+    groups = _group_by_company(contacts)
+    total_companies = len(groups)
+    print(f"Unique companies to evaluate: {total_companies}")
+    print(
+        f"({total_rows - total_companies} rows will be stamped instantly "
+        f"from cached results, saving ~{total_rows - total_companies} API calls)\n"
+        if total_rows > total_companies else "\n"
+    )
+
     if MAX_EVALUATIONS:
-        contacts = contacts[:MAX_EVALUATIONS]
-        print(f"Capped to first {len(contacts)} rows for this run.\n")
+        # Cap applies to rows processed, not companies evaluated
+        all_contacts_ordered = [c for group in groups.values() for c in group]
+        capped = all_contacts_ordered[:MAX_EVALUATIONS]
+        # Rebuild groups from the capped set
+        groups = _group_by_company(capped)
+        print(f"Capped to first {len(capped)} rows ({len(groups)} companies).\n")
 
     client = _gemini_client()
 
-    done = skipped = errors = 0
-    for i, contact in enumerate(contacts, 1):
-        company = contact["company"] or contact["name"] or "(unknown)"
-        role    = contact["role"]
-        page_id = contact["page_id"]
-        label   = f"[{i}/{len(contacts)}] {company}"
+    done = stamped_from_cache = errors = 0
+    company_num = 0
 
-        print(f"{label}")
-        print(f"  Role   : {role or '—'}")
+    for key, group in groups.items():
+        company_num += 1
+        # Use the first contact's company name as display label (original case)
+        company = group[0]["company"] or group[0]["name"] or "(unknown)"
+        role    = group[0]["role"]  # role of the first contact (for context)
 
-        # 1. DuckDuckGo snippet
+        n_contacts = len(group)
+        label = f"[company {company_num}/{len(groups)}] {company}"
+        if n_contacts > 1:
+            label += f"  ({n_contacts} contacts)"
+
+        print(label)
+
+        # ── DuckDuckGo snippet ──────────────────────────────────────────────
         snippet = _ddg_snippet(company)
-        print(f"  Snippet: {snippet[:80]}{'…' if len(snippet) > 80 else ''}")
+        print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''}")
 
-        # 2. Gemini assessment
+        # ── Gemini assessment ───────────────────────────────────────────────
         try:
             result = assess_company(client, company, role, snippet)
         except Exception as exc:
             print(f"  [ERROR] Gemini failed: {exc}")
-            errors += 1
-            # Stamp Skipped so we don't retry forever on a broken row,
-            # but don't fill category/score so a human can review.
-            try:
-                _write_result(page_id, CATEGORY_UNRELATED, 1, "Gemini error — review manually.", "Skipped")
-            except Exception:
-                pass
-            _pace(i, len(contacts))
+            errors += len(group)
+            # Stamp Skipped on all contacts in this group so we don't retry
+            # forever; a human can clear the stamp to force a re-try.
+            for contact in group:
+                try:
+                    _write_result(
+                        contact["page_id"],
+                        CATEGORY_UNRELATED, 1,
+                        "Gemini error — review manually.",
+                        "Skipped",
+                    )
+                except Exception:
+                    pass
+            _pace(company_num, len(groups))
             continue
 
         cat   = result["category"]
@@ -370,21 +422,39 @@ def run() -> None:
         rat   = result["rationale"]
         print(f"  → {cat}  |  Score {score}/5  |  {rat}")
 
-        # 3. Write back to Notion
-        try:
-            _write_result(page_id, cat, score, rat, "Done")
-            done += 1
-        except requests.RequestException as exc:
-            print(f"  [ERROR] Notion write failed: {exc}")
-            errors += 1
+        # ── Write to all contacts in this group ─────────────────────────────
+        first = True
+        for contact in group:
+            try:
+                _write_result(contact["page_id"], cat, score, rat, "Done")
+                done += 1
+                if not first:
+                    stamped_from_cache += 1
+                    print(
+                        f"    ✓ {contact['name'] or '(no name)'} "
+                        f"— stamped from company cache (no extra API call)"
+                    )
+            except requests.RequestException as exc:
+                print(
+                    f"  [ERROR] Notion write failed for "
+                    f"{contact['name']!r}: {exc}"
+                )
+                errors += 1
+            first = False
 
-        _pace(i, len(contacts))
+        _pace(company_num, len(groups))
 
-    print(f"\n✓ Finished.  Done: {done}  Skipped: {skipped}  Errors: {errors}")
+    print(
+        f"\n✓ Finished.  "
+        f"Rows written: {done}  "
+        f"(of which {stamped_from_cache} were duplicate-company rows, "
+        f"zero extra API calls)  "
+        f"Errors: {errors}"
+    )
 
 
 def _pace(index: int, total: int) -> None:
-    """Sleep between rows; skip the pause after the last one."""
+    """Sleep between company evaluations; skip the pause after the last one."""
     if index < total and EVAL_INTERVAL > 0:
         jitter = random.uniform(-0.3, 0.3) * EVAL_INTERVAL
         time.sleep(max(0.0, EVAL_INTERVAL + jitter))
