@@ -37,10 +37,20 @@ import config
 import notion_sync
 
 # ── Column names (must match Notion DB exactly — all are plain Text) ──────────
-PROP_AI_EVAL      = "AI Evaluation"   # Text — blank = unprocessed, "Done"/"Skipped" = done
+PROP_AI_EVAL      = "AI Evaluation"   # Text — gate column (see statuses below)
 PROP_AI_CATEGORY  = "AI Category"     # Text
 PROP_AI_SCORE     = "AI Score"        # Text  (stored as "4/5" so it's human-readable)
 PROP_AI_RATIONALE = "AI Rationale"    # Text
+PROP_AI_CONTEXT   = "AI Web Context"  # Text — raw search snippet saved before Gemini call
+
+# ── AI Evaluation status values ───────────────────────────────────────────────
+# blank   → not yet processed (picked up on every run)
+# "Done"  → successfully evaluated by Gemini
+# "Skipped" → intentionally skipped (no company name)
+# "Error" → Gemini failed; snippet saved; will be retried on next run
+EVAL_STATUS_DONE    = "Done"
+EVAL_STATUS_SKIPPED = "Skipped"
+EVAL_STATUS_ERROR   = "Error"
 
 # ── Run settings ──────────────────────────────────────────────────────────────
 MAX_EVALUATIONS = max(0, int(os.environ.get("MAX_EVALUATIONS", "0")))  # 0 = unlimited
@@ -146,20 +156,33 @@ def _build_filter() -> dict:
             "Add a Text column named 'AI Evaluation' to your Notion database."
         )
 
+    # Also pick up "Error" rows — Gemini failed last time, retry them.
+    if eval_type == "rich_text":
+        eval_error = {"property": PROP_AI_EVAL, "rich_text": {"equals": EVAL_STATUS_ERROR}}
+    else:
+        eval_error = {"property": PROP_AI_EVAL, "title": {"equals": EVAL_STATUS_ERROR}}
+
+    needs_processing = {"or": [eval_empty, eval_error]}
+
     # Also require Company to be filled — no point evaluating a nameless company.
     if company_type in ("rich_text", "title"):
         company_not_empty = {
             "property": config.PROP_COMPANY,
             company_type: {"is_not_empty": True},
         }
-        return {"and": [eval_empty, company_not_empty]}
+        return {"and": [needs_processing, company_not_empty]}
 
     # Company column missing or unexpected type — fall back to eval-only filter
-    return eval_empty
+    return needs_processing
 
 
 def fetch_unevaluated() -> list[dict]:
-    """Page through the DB and return all rows where AI Evaluation is blank."""
+    """Page through the DB and return all rows that need evaluation.
+
+    Includes blank AI Evaluation rows AND rows stamped 'Error' (Gemini failed
+    last time — retry them). Also reads any cached AI Web Context snippet so
+    Error retries skip the DuckDuckGo search when a snippet is already saved.
+    """
     url = f"{config.NOTION_API_URL}/databases/{config.NOTION_DATABASE_ID}/query"
     body_base = {"filter": _build_filter(), "page_size": 100}
     contacts: list[dict] = []
@@ -174,10 +197,11 @@ def fetch_unevaluated() -> list[dict]:
         for page in data.get("results", []):
             props = page.get("properties", {})
             contacts.append({
-                "page_id": page["id"],
-                "name":    _plain_text(props.get(config.PROP_NAME)),
-                "company": _plain_text(props.get(config.PROP_COMPANY)),
-                "role":    _plain_text(props.get(config.PROP_ROLE)),
+                "page_id":        page["id"],
+                "name":           _plain_text(props.get(config.PROP_NAME)),
+                "company":        _plain_text(props.get(config.PROP_COMPANY)),
+                "role":           _plain_text(props.get(config.PROP_ROLE)),
+                "cached_snippet": _rich_text_value(props.get(PROP_AI_CONTEXT)),
             })
         if not data.get("has_more"):
             break
@@ -187,39 +211,72 @@ def fetch_unevaluated() -> list[dict]:
     return contacts
 
 
-def _write_result(page_id: str, category: str, score: int, rationale: str, status: str) -> None:
-    """Patch all four AI text columns onto a Notion row."""
+def _rt(text: str) -> dict:
+    return {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+
+def _title_rt(text: str) -> dict:
+    return {"title": [{"type": "text", "text": {"content": text[:2000]}}]}
+
+def _patch_page(page_id: str, properties: dict) -> None:
+    url = f"{config.NOTION_API_URL}/pages/{page_id}"
+    resp = notion_sync._notion_request("PATCH", url, {"properties": properties})
+    resp.raise_for_status()
+
+
+def _write_snippet(page_id: str, snippet: str) -> None:
+    """Save the raw search snippet to Notion BEFORE calling Gemini.
+
+    Persisting the snippet early means it survives a Gemini error — a human
+    can read it to make a manual judgment, and the next automated retry can
+    use it without a repeat DuckDuckGo search.
+    """
     schema = notion_sync.get_schema()
+    ptype = schema.get(PROP_AI_CONTEXT)
+    if ptype not in ("rich_text", "title"):
+        return  # column not created yet — silently skip
+    prop_value = _rt(snippet) if ptype == "rich_text" else _title_rt(snippet)
+    _patch_page(page_id, {PROP_AI_CONTEXT: prop_value})
 
-    def _rt(text: str) -> dict:
-        return {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
 
-    def _title_rt(text: str) -> dict:
-        return {"title": [{"type": "text", "text": {"content": text[:2000]}}]}
+def _write_result(
+    page_id: str,
+    category: str,
+    score: int,
+    rationale: str,
+    status: str,
+    snippet: str = "",
+) -> None:
+    """Patch all AI columns onto a Notion row.
 
+    `snippet` is written to AI Web Context only when non-empty and the column
+    exists — callers that already saved the snippet via _write_snippet can
+    omit it here to avoid a redundant write.
+    """
+    schema = notion_sync.get_schema()
     properties: dict = {}
 
-    for prop, value in [
+    pairs = [
         (PROP_AI_CATEGORY,  category),
         (PROP_AI_SCORE,     f"{score}/5"),
         (PROP_AI_RATIONALE, rationale),
         (PROP_AI_EVAL,      status),
-    ]:
+    ]
+    if snippet:
+        pairs.append((PROP_AI_CONTEXT, snippet))
+
+    for prop, value in pairs:
         ptype = schema.get(prop)
         if ptype == "rich_text":
             properties[prop] = _rt(value)
         elif ptype == "title":
             properties[prop] = _title_rt(value)
-        # If the column is missing entirely, we silently skip it so one missing
-        # column doesn't abort writes to the three that do exist.
+        # Missing column → silently skip so one absent column doesn't abort the write.
 
     if not properties:
         print(f"  [eval ] WARNING: no writable AI columns found for page {page_id}.")
         return
 
-    url = f"{config.NOTION_API_URL}/pages/{page_id}"
-    resp = notion_sync._notion_request("PATCH", url, {"properties": properties})
-    resp.raise_for_status()
+    _patch_page(page_id, properties)
 
 
 # ── Web search for company context ───────────────────────────────────────────
@@ -658,8 +715,23 @@ def run() -> None:
         print(label)
 
         # ── Web search snippet (DDG → Serper fallback) ─────────────────────
-        snippet = _search_snippet(company)
-        print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''}")
+        # Use the cached snippet from Notion if this is a retry (Error row),
+        # otherwise fetch a fresh one and save it before calling Gemini.
+        cached = group[0].get("cached_snippet", "")
+        if cached:
+            snippet = cached
+            print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''} [cached]")
+        else:
+            snippet = _search_snippet(company)
+            print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''}")
+            # ── Save snippet to ALL contacts in this group BEFORE calling Gemini ──
+            # This ensures the context is in Notion even if Gemini fails below.
+            if snippet:
+                for contact in group:
+                    try:
+                        _write_snippet(contact["page_id"], snippet)
+                    except Exception:
+                        pass
 
         # ── Gemini assessment ───────────────────────────────────────────────
         try:
@@ -667,16 +739,20 @@ def run() -> None:
         except Exception as exc:
             print(f"  [ERROR] Gemini failed: {exc}")
             errors += len(group)
-            # Stamp Skipped on all contacts in this group so we don't retry
-            # forever; a human can clear the stamp to force a re-try.
+            # Stamp "Error" (NOT Skipped) — this row will be retried on the
+            # next run. The snippet is already saved so no DDG call needed.
+            # We do NOT write a fake category/score so a human reading the
+            # row sees blank fields + the web context snippet for judgment.
             for contact in group:
                 try:
-                    _write_result(
-                        contact["page_id"],
-                        CATEGORY_UNRELATED, 1,
-                        "Gemini error — review manually.",
-                        "Skipped",
-                    )
+                    schema = notion_sync.get_schema()
+                    ptype = schema.get(PROP_AI_EVAL)
+                    if ptype == "rich_text":
+                        _patch_page(contact["page_id"],
+                                    {PROP_AI_EVAL: _rt(EVAL_STATUS_ERROR)})
+                    elif ptype == "title":
+                        _patch_page(contact["page_id"],
+                                    {PROP_AI_EVAL: _title_rt(EVAL_STATUS_ERROR)})
                 except Exception:
                     pass
             _pace(company_num, len(groups))
@@ -691,7 +767,7 @@ def run() -> None:
         first = True
         for contact in group:
             try:
-                _write_result(contact["page_id"], cat, score, rat, "Done")
+                _write_result(contact["page_id"], cat, score, rat, EVAL_STATUS_DONE)
                 done += 1
                 if not first:
                     stamped_from_cache += 1
@@ -723,6 +799,78 @@ def _pace(index: int, total: int) -> None:
     if index < total and EVAL_INTERVAL > 0:
         jitter = random.uniform(-0.3, 0.3) * EVAL_INTERVAL
         time.sleep(max(0.0, EVAL_INTERVAL + jitter))
+
+
+def reset_gemini_errors() -> None:
+    """Clear rows incorrectly stamped 'Skipped' due to a Gemini error.
+
+    Earlier script versions stamped Gemini failures as 'Skipped' with fake
+    category 'Unrelated / 1/5'. This function finds those rows (identified
+    by the 'Gemini error' text in AI Rationale) and resets them to blank so
+    the next normal run picks them up and evaluates them properly.
+
+    Run once from the Shell to fix the bad data:
+      cd swapcard_sync && python -c "import company_evaluator; company_evaluator.reset_gemini_errors()"
+    """
+    import config as _config
+    import notion_sync as _ns
+
+    _ns.get_schema()
+    schema = _ns.get_schema()
+    rat_type = schema.get(PROP_AI_RATIONALE)
+    if rat_type not in ("rich_text", "title"):
+        print("AI Rationale column not found — nothing to reset.")
+        return
+
+    url = f"{_config.NOTION_API_URL}/databases/{_config.NOTION_DATABASE_ID}/query"
+    # Find rows where AI Rationale contains "Gemini error"
+    body_base = {
+        "filter": {
+            "property": PROP_AI_RATIONALE,
+            rat_type: {"contains": "Gemini error"},
+        },
+        "page_size": 100,
+    }
+
+    reset_count = 0
+    cursor: str | None = None
+    print("Scanning for rows with 'Gemini error' in AI Rationale…")
+    while True:
+        body = dict(body_base)
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = _ns._notion_request("POST", url, body)
+        resp.raise_for_status()
+        data = resp.json()
+        for page in data.get("results", []):
+            page_id = page["id"]
+            props   = page.get("properties", {})
+            company = _plain_text(props.get(_config.PROP_COMPANY)) or "(no company)"
+            # Clear AI Evaluation, AI Category, AI Score, AI Rationale
+            clear: dict = {}
+            for prop in (PROP_AI_EVAL, PROP_AI_CATEGORY, PROP_AI_RATIONALE):
+                ptype = schema.get(prop)
+                if ptype == "rich_text":
+                    clear[prop] = {"rich_text": []}
+                elif ptype == "title":
+                    clear[prop] = {"title": []}
+            if schema.get(PROP_AI_SCORE) == "rich_text":
+                clear[PROP_AI_SCORE] = {"rich_text": []}
+            if clear:
+                try:
+                    _patch_page(page_id, clear)
+                    reset_count += 1
+                    print(f"  ✓ Reset: {company}")
+                except Exception as exc:
+                    print(f"  ✗ Failed to reset {company}: {exc}")
+            time.sleep(0.3)
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+        if not cursor:
+            break
+
+    print(f"\nDone. {reset_count} rows reset to blank — they will be re-evaluated on the next run.")
 
 
 if __name__ == "__main__":
