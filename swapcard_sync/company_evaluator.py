@@ -55,7 +55,7 @@ EVAL_STATUS_ERROR   = "Error"
 # ── Run settings ──────────────────────────────────────────────────────────────
 MAX_EVALUATIONS = max(0, int(os.environ.get("MAX_EVALUATIONS", "0")))  # 0 = unlimited
 EVAL_INTERVAL   = max(0.0, float(os.environ.get("EVAL_INTERVAL", "3.0")))
-GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ── Gemini system prompt ──────────────────────────────────────────────────────
 _SYSTEM_PROMPT = """You are a B2B lead qualifier for BlocksRace, a company that provides
@@ -474,7 +474,8 @@ def _call_gemini(client: genai.Client, user_message: str) -> str:
                 config=genai_types.GenerateContentConfig(
                     system_instruction=_SYSTEM_PROMPT,
                     temperature=0.1,
-                    max_output_tokens=256,
+                    max_output_tokens=1024,
+                    response_mime_type="application/json",
                 ),
             )
             return (response.text or "").strip()
@@ -753,23 +754,25 @@ def run() -> None:
         print(label)
 
         # ── Web search snippet (DDG → Serper fallback) ─────────────────────
-        # Use the cached snippet from Notion if this is a retry (Error row),
-        # otherwise fetch a fresh one and save it before calling Gemini.
+        # Use the cached snippet from Notion if it actually mentions this company.
+        # Validate even cached snippets — earlier runs may have saved contaminated
+        # results (e.g. GLI content returned for unrelated company searches).
         cached = group[0].get("cached_snippet", "")
-        if cached:
+        if cached and _snippet_mentions_company(cached, company):
             snippet = cached
             print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''} [cached]")
         else:
+            if cached:
+                print(f"  Snippet : cached snippet invalid for '{company}' — fetching fresh.")
             snippet = _search_snippet(company)
             print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''}")
             # ── Save snippet to ALL contacts in this group BEFORE calling Gemini ──
             # This ensures the context is in Notion even if Gemini fails below.
-            if snippet:
-                for contact in group:
-                    try:
-                        _write_snippet(contact["page_id"], snippet)
-                    except Exception:
-                        pass
+            for contact in group:
+                try:
+                    _write_snippet(contact["page_id"], snippet)
+                except Exception:
+                    pass
 
         # ── Gemini assessment ───────────────────────────────────────────────
         try:
