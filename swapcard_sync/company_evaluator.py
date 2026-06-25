@@ -267,7 +267,16 @@ def _write_result(
             properties[prop] = _rt(value)
         elif ptype == "title":
             properties[prop] = _title_rt(value)
-        # Missing column → silently skip so one absent column doesn't abort the write.
+        else:
+            # Missing column → silently skip non-critical columns, but warn loudly
+            # if it's the gate column — a missing AI Evaluation stamp means the row
+            # will be re-fetched and re-evaluated on every future run.
+            if prop == PROP_AI_EVAL:
+                print(
+                    f"  [eval ] ERROR: '{PROP_AI_EVAL}' column not found in schema "
+                    f"(type={ptype!r}). 'Done' stamp will NOT be written — this row "
+                    f"will be re-evaluated on the next run. Check the column name."
+                )
 
     if not properties:
         print(f"  [eval ] WARNING: no writable AI columns found for page {page_id}.")
