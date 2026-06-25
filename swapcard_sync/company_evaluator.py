@@ -6,7 +6,7 @@ For each Notion row where 'AI Evaluation' is blank:
      same result to every person at that company (no duplicate API calls).
   3. Search DuckDuckGo for a short business-context snippet.
   4. Send that context to Gemini Flash with a strict system prompt.
-  5. Gemini returns: category, score (1-5), rationale (1 sentence).
+  5. Gemini returns: company_type (5-8 word description), score (1-5), rationale (1 sentence).
   6. Write those three values back to Notion + stamp 'AI Evaluation = Done'.
 
 All four AI columns are plain Text in Notion (rich_text), so no special
@@ -38,7 +38,7 @@ import notion_sync
 
 # ── Column names (must match Notion DB exactly — all are plain Text) ──────────
 PROP_AI_EVAL      = "AI Evaluation"   # Text — gate column (see statuses below)
-PROP_AI_CATEGORY  = "AI Category"     # Text
+PROP_AI_TYPE      = "AI Company Type" # Text — 5-8 word description of what the company does
 PROP_AI_SCORE     = "AI Score"        # Text  (stored as "4/5" so it's human-readable)
 PROP_AI_RATIONALE = "AI Rationale"    # Text
 PROP_AI_CONTEXT   = "AI Web Context"  # Text — raw search snippet saved before Gemini call
@@ -57,14 +57,6 @@ MAX_EVALUATIONS = max(0, int(os.environ.get("MAX_EVALUATIONS", "0")))  # 0 = unl
 EVAL_INTERVAL   = max(0.0, float(os.environ.get("EVAL_INTERVAL", "3.0")))
 GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
-# ── Category labels ───────────────────────────────────────────────────────────
-CATEGORY_CASINO    = "Casino Operator"
-CATEGORY_CRYPTO    = "Crypto / VC"
-CATEGORY_TECH      = "Strategic Tech Partner"
-CATEGORY_UNRELATED = "Unrelated"
-
-VALID_CATEGORIES = {CATEGORY_CASINO, CATEGORY_CRYPTO, CATEGORY_TECH, CATEGORY_UNRELATED}
-
 # ── Gemini system prompt ──────────────────────────────────────────────────────
 _SYSTEM_PROMPT = """You are a B2B lead qualifier for BlocksRace, a company that provides
 innovative betting markets and live sports content to the iGaming industry.
@@ -73,29 +65,34 @@ and iGaming platforms. It may also partner with tech companies or attract
 crypto/VC investment.
 
 Given a company name, the contact's role, and a short web search snippet about
-the company, classify the company into EXACTLY ONE of these four categories:
+the company, produce two things:
 
-1. Casino Operator       — operates an online casino, sportsbook, or gambling platform
-                           that could license BlocksRace betting markets
-2. Crypto / VC          — a crypto firm, venture capital fund, or investor that might
-                           fund or partner with BlocksRace
-3. Strategic Tech Partner — a B2B tech provider (data, platform, software, API) that
-                           could integrate with or complement BlocksRace
-4. Unrelated            — affiliate, payment processor, slots/lottery provider, marketing
-                           agency, regulator, recruitment firm, media, or simply too small
-                           to be a meaningful partner
+1. company_type — a precise 5-8 word description of exactly what this company does.
+   Write it as a plain noun phrase, lowercase, no punctuation.
+   Examples:
+     "online casino and sportsbook operator"
+     "iGaming affiliate network for casino traffic"
+     "B2B payment processor for online gambling"
+     "sports betting data API provider"
+     "venture capital fund focused on crypto gaming"
+     "SEO and content agency for iGaming brands"
+     "white-label casino platform provider"
+     "recruitment agency for gaming industry"
+   Be specific — avoid vague terms like "technology company" or "service provider".
+   Use the web context to identify their actual business function.
 
-Also assign a Match Score from 1 to 5 reflecting how valuable this company is to
-BlocksRace:
-  5 = Casino Operator or Sportsbook actively needing new betting content
-  4 = Platform / B2B iGaming tech with a clear integration angle
-  3 = Crypto / VC with iGaming exposure or interest
-  2 = Generic tech partner with some possible angle
-  1 = Unrelated, affiliate, payment processor, or no clear path to revenue
+2. score — an integer 1-5 reflecting how valuable this company is to BlocksRace right now:
+   5 = Casino Operator or Sportsbook actively needing new betting content
+   4 = B2B iGaming tech platform with a clear integration angle
+   3 = Crypto / VC with iGaming exposure or interest
+   2 = Adjacent industry — could be useful as a service provider or future partner
+   1 = No clear path to BlocksRace revenue or partnership
+
+3. rationale — one concise sentence explaining the score.
 
 Reply with ONLY a valid JSON object and nothing else — no markdown, no commentary:
 {
-  "category": "<one of the four categories above>",
+  "company_type": "<5-8 word description of what the company does>",
   "score": <integer 1-5>,
   "rationale": "<one concise sentence explaining the score>"
 }"""
@@ -240,7 +237,7 @@ def _write_snippet(page_id: str, snippet: str) -> None:
 
 def _write_result(
     page_id: str,
-    category: str,
+    company_type: str,
     score: int,
     rationale: str,
     status: str,
@@ -256,7 +253,7 @@ def _write_result(
     properties: dict = {}
 
     pairs = [
-        (PROP_AI_CATEGORY,  category),
+        (PROP_AI_TYPE,      company_type),
         (PROP_AI_SCORE,     f"{score}/5"),
         (PROP_AI_RATIONALE, rationale),
         (PROP_AI_EVAL,      status),
@@ -454,7 +451,7 @@ def _call_gemini(client: genai.Client, user_message: str) -> str:
 def assess_company(client: genai.Client, company: str, role: str, snippet: str) -> dict:
     """Send company info to Gemini and parse the JSON response.
 
-    Returns a dict with keys: category, score, rationale.
+    Returns a dict with keys: company_type, score, rationale.
     Raises on unrecoverable errors (caller decides whether to stamp Skipped).
     """
     user_message = (
@@ -473,17 +470,12 @@ def assess_company(client: genai.Client, company: str, role: str, snippet: str) 
     except json.JSONDecodeError as exc:
         raise ValueError(f"Gemini returned non-JSON: {raw[:300]}") from exc
 
-    category  = str(result.get("category", "")).strip()
-    score_raw = result.get("score", 1)
-    rationale = str(result.get("rationale", "")).strip()
+    company_type = str(result.get("company_type", "")).strip()
+    score_raw    = result.get("score", 1)
+    rationale    = str(result.get("rationale", "")).strip()
 
-    if category not in VALID_CATEGORIES:
-        for valid in VALID_CATEGORIES:
-            if valid.lower().split()[0] in category.lower():
-                category = valid
-                break
-        else:
-            category = CATEGORY_UNRELATED
+    if not company_type:
+        company_type = "unknown business type"
 
     try:
         score = max(1, min(5, int(score_raw)))
@@ -493,7 +485,7 @@ def assess_company(client: genai.Client, company: str, role: str, snippet: str) 
     if not rationale:
         rationale = "No rationale provided."
 
-    return {"category": category, "score": score, "rationale": rationale}
+    return {"company_type": company_type, "score": score, "rationale": rationale}
 
 
 # ── Company-level deduplication (fuzzy name matching) ────────────────────────
@@ -641,7 +633,7 @@ def run() -> None:
     # ── Schema check ──────────────────────────────────────────────────────────
     schema = notion_sync.get_schema()
     missing_cols = []
-    for col in [PROP_AI_EVAL, PROP_AI_CATEGORY, PROP_AI_SCORE, PROP_AI_RATIONALE]:
+    for col in [PROP_AI_EVAL, PROP_AI_TYPE, PROP_AI_SCORE, PROP_AI_RATIONALE]:
         if schema.get(col) not in ("rich_text", "title", "text"):
             missing_cols.append(
                 f"  '{col}' (type is {schema.get(col)!r} — needs to be a Text column)"
@@ -700,7 +692,7 @@ def run() -> None:
             print("  Skipping — company field is empty.")
             for contact in group:
                 try:
-                    _write_result(contact["page_id"], CATEGORY_UNRELATED, 1,
+                    _write_result(contact["page_id"], "no company name provided", 1,
                                   "No company name — cannot evaluate.", "Skipped")
                 except Exception:
                     pass
@@ -758,16 +750,16 @@ def run() -> None:
             _pace(company_num, len(groups))
             continue
 
-        cat   = result["category"]
-        score = result["score"]
-        rat   = result["rationale"]
-        print(f"  → {cat}  |  Score {score}/5  |  {rat}")
+        company_type = result["company_type"]
+        score        = result["score"]
+        rat          = result["rationale"]
+        print(f"  → {company_type}  |  Score {score}/5  |  {rat}")
 
         # ── Write to all contacts in this group ─────────────────────────────
         first = True
         for contact in group:
             try:
-                _write_result(contact["page_id"], cat, score, rat, EVAL_STATUS_DONE)
+                _write_result(contact["page_id"], company_type, score, rat, EVAL_STATUS_DONE)
                 done += 1
                 if not first:
                     stamped_from_cache += 1
@@ -846,9 +838,9 @@ def reset_gemini_errors() -> None:
             page_id = page["id"]
             props   = page.get("properties", {})
             company = _plain_text(props.get(_config.PROP_COMPANY)) or "(no company)"
-            # Clear AI Evaluation, AI Category, AI Score, AI Rationale
+            # Clear AI Evaluation, AI Company Type, AI Score, AI Rationale
             clear: dict = {}
-            for prop in (PROP_AI_EVAL, PROP_AI_CATEGORY, PROP_AI_RATIONALE):
+            for prop in (PROP_AI_EVAL, PROP_AI_TYPE, PROP_AI_RATIONALE):
                 ptype = schema.get(prop)
                 if ptype == "rich_text":
                     clear[prop] = {"rich_text": []}
