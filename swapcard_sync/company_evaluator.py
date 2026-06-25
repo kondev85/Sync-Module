@@ -38,7 +38,7 @@ import notion_sync
 
 # ── Column names (must match Notion DB exactly — all are plain Text) ──────────
 PROP_AI_EVAL      = "AI Evaluation"   # Text — gate column (see statuses below)
-PROP_AI_TYPE      = "AI Company Type" # Text — 5-8 word description of what the company does
+PROP_AI_TYPE      = "AI Category"     # Text — 5-8 word description of what the company does (reuses existing column)
 PROP_AI_SCORE     = "AI Score"        # Text  (stored as "4/5" so it's human-readable)
 PROP_AI_RATIONALE = "AI Rationale"    # Text
 PROP_AI_CONTEXT   = "AI Web Context"  # Text — raw search snippet saved before Gemini call
