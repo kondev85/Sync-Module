@@ -83,10 +83,16 @@ the company, produce two things:
 
 2. score — an integer 1-5 reflecting how valuable this company is to BlocksRace right now:
    5 = Casino Operator or Sportsbook actively needing new betting content
-   4 = B2B iGaming tech platform with a clear integration angle
+   4 = B2B iGaming tech platform with a clear integration angle (data feeds, platform APIs, etc.)
    3 = Crypto / VC with iGaming exposure or interest
-   2 = Adjacent industry — could be useful as a service provider or future partner
-   1 = No clear path to BlocksRace revenue or partnership
+   2 = Adjacent — could be useful as a service provider or partner in the future
+   1 = No integration path with BlocksRace betting content — includes: payment processors,
+       payment gateways, PSPs, fintech, affiliates, marketing agencies, SEO agencies,
+       recruitment firms, regulators, compliance/certification bodies, media outlets.
+       These companies provide services TO casinos but will never license betting markets.
+
+   IMPORTANT: Payment processors and PSPs are ALWAYS score 1. BlocksRace sells betting
+   content — it does not integrate with payment infrastructure. Do not score them above 1.
 
 3. rationale — one concise sentence explaining the score.
 
@@ -340,6 +346,27 @@ def _serper_snippet(query: str) -> str | None:
     return None
 
 
+def _snippet_mentions_company(snippet: str, company: str) -> bool:
+    """Return True if at least one meaningful token from the company name
+    appears in the snippet — guards against DuckDuckGo returning a popular
+    iGaming brand (e.g. GLI) for unrelated company searches.
+
+    Strips legal suffixes and short noise words before checking so that
+    "KA Gaming" matches on "KA" and "Gaming", etc.
+    """
+    noise = {"the", "and", "of", "for", "in", "a", "an", "ltd", "limited",
+             "inc", "llc", "group", "holdings", "international", "intl", "co"}
+    tokens = [
+        t for t in re.sub(r"[^\w\s]", " ", company.lower()).split()
+        if len(t) > 1 and t not in noise
+    ]
+    if not tokens:
+        return True   # nothing meaningful to check — don't discard
+    snippet_lower = snippet.lower()
+    # Require at least one token (2+ chars) to appear verbatim
+    return any(tok in snippet_lower for tok in tokens)
+
+
 def _search_snippet(company: str) -> str:
     """Return a short business-context snippet for a company name.
 
@@ -348,6 +375,11 @@ def _search_snippet(company: str) -> str:
       2. DuckDuckGo — plain name-only fallback
       3. Serper.dev — iGaming query (if SERPER_API_KEY is set)
       4. Serper.dev — plain name-only (if SERPER_API_KEY is set)
+
+    Each snippet is validated: if the company name doesn't appear in the
+    result, the snippet is discarded (DuckDuckGo often returns a well-known
+    iGaming brand like GLI for unrelated company searches because GLI tests
+    and certifies many companies and shows up in iGaming-adjacent results).
 
     Returns an empty string if every attempt fails — Gemini still runs
     but with less context and will default to a lower confidence score.
@@ -359,7 +391,9 @@ def _search_snippet(company: str) -> str:
     for query in (igaming_query, plain_query):
         snippet = _ddg_snippet(query)
         if snippet:
-            return snippet
+            if _snippet_mentions_company(snippet, company):
+                return snippet
+            print(f"  [search] Snippet discarded — doesn't mention '{company}'. Trying next query.")
         time.sleep(1)   # brief pause between DDG attempts
 
     # ── Serper fallback (paid, if key is set) ────────────────────────────────
@@ -367,10 +401,13 @@ def _search_snippet(company: str) -> str:
         for query in (igaming_query, plain_query):
             snippet = _serper_snippet(query)
             if snippet:
-                print("  [search] DDG failed — used Serper fallback.")
-                return snippet
+                if _snippet_mentions_company(snippet, company):
+                    print("  [search] DDG failed — used Serper fallback.")
+                    return snippet
+                print(f"  [search] Serper snippet discarded — doesn't mention '{company}'.")
             time.sleep(0.5)
 
+    print(f"  [search] No valid snippet found for '{company}' — Gemini will assess by name only.")
     return ""
 
 
