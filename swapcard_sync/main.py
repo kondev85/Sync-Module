@@ -513,6 +513,10 @@ def main() -> None:
     if config.RUN_MODE in ("3", "evaluator", "ai"):
         company_evaluator.run()
         return
+    if config.RUN_MODE in ("bot", "telegram"):
+        import telegram_bot
+        telegram_bot.run()
+        return
 
     print("=" * 60)
     print("  iGB Live — Contact Tools")
@@ -520,14 +524,15 @@ def main() -> None:
     print("  [1] Run iGB Live Event Scraper & Sync")
     print("  [2] Run Missing LinkedIn Profiles Finder & Enricher")
     print("  [3] Run AI Company Evaluator (BlocksRace lead qualifier)")
+    print("  [4] Run Conference Scout Telegram Bot")
     print("-" * 60)
 
     try:
-        choice = input("Select an option [1/2/3]: ").strip()
+        choice = input("Select an option [1/2/3/4]: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nNo selection made. Exiting. "
-              "(Tip: set RUN_MODE=scraper, RUN_MODE=enricher, or RUN_MODE=evaluator "
-              "for non-interactive runs.)")
+              "(Tip: set RUN_MODE=scraper, RUN_MODE=enricher, RUN_MODE=evaluator, "
+              "or RUN_MODE=bot for non-interactive runs.)")
         return
 
     if choice == "1":
@@ -536,8 +541,11 @@ def main() -> None:
         _run_enricher_interactive()
     elif choice == "3":
         _run_evaluator_interactive()
+    elif choice == "4":
+        import telegram_bot
+        telegram_bot.run()
     else:
-        print(f"Unknown option {choice!r}. Please run again and choose 1, 2, or 3.")
+        print(f"Unknown option {choice!r}. Please run again and choose 1, 2, 3, or 4.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,88 @@
+version: "3.9"
+
+services:
+
+  # ── Conference Scout — Telegram bot (default service) ──────────────────────
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: blocksrace-scout:latest
+    container_name: blocksrace-scout-bot
+    restart: unless-stopped
+
+    environment:
+      RUN_MODE: bot
+
+      # ── Required secrets (set in a .env file on the Hetzner VPS, never commit) ──
+      TELEGRAM_BOT_TOKEN:  ${TELEGRAM_BOT_TOKEN}
+      NOTION_API_TOKEN:    ${NOTION_API_TOKEN}
+      NOTION_DATABASE_ID:  ${NOTION_DATABASE_ID}
+      GEMINI_API_KEY:      ${GEMINI_API_KEY}
+
+      # ── Optional overrides ────────────────────────────────────────────────────
+      # GEMINI_MODEL:        gemini-2.5-flash
+      # GEMINI_SCOUT_MODEL:  gemini-2.0-flash-lite
+
+    # Mount local data files so you can update them without rebuilding the image.
+    # Place my_profile.md and Connections.csv in ./swapcard_sync/ on the VPS.
+    volumes:
+      - ./swapcard_sync/my_profile.md:/app/swapcard_sync/my_profile.md:ro
+      - ./swapcard_sync/Connections.csv:/app/swapcard_sync/Connections.csv:ro
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── One-shot jobs (run manually with: docker compose run --rm scraper) ──────
+
+  scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: blocksrace-scout:latest
+    profiles: ["jobs"]
+    environment:
+      RUN_MODE: scraper
+      TELEGRAM_BOT_TOKEN:  ${TELEGRAM_BOT_TOKEN}
+      NOTION_API_TOKEN:    ${NOTION_API_TOKEN}
+      NOTION_DATABASE_ID:  ${NOTION_DATABASE_ID}
+      SWAPCARD_BEARER_TOKEN: ${SWAPCARD_BEARER_TOKEN:-}
+      SWAPCARD_COOKIE:       ${SWAPCARD_COOKIE:-}
+      ENRICH_PROFILES:       ${ENRICH_PROFILES:-1}
+      ROW_INSERT_INTERVAL:   ${ROW_INSERT_INTERVAL:-0.6}
+      SKIP_CONTACTS:         ${SKIP_CONTACTS:-0}
+      MAX_CONTACTS:          ${MAX_CONTACTS:-}
+
+  enricher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: blocksrace-scout:latest
+    profiles: ["jobs"]
+    environment:
+      RUN_MODE: enricher
+      NOTION_API_TOKEN:  ${NOTION_API_TOKEN}
+      NOTION_DATABASE_ID: ${NOTION_DATABASE_ID}
+      MAX_LOOKUPS:        ${MAX_LOOKUPS:-300}
+      SEARCH_INTERVAL:    ${SEARCH_INTERVAL:-5.0}
+
+  evaluator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: blocksrace-scout:latest
+    profiles: ["jobs"]
+    environment:
+      RUN_MODE: evaluator
+      NOTION_API_TOKEN:   ${NOTION_API_TOKEN}
+      NOTION_DATABASE_ID: ${NOTION_DATABASE_ID}
+      GEMINI_API_KEY:     ${GEMINI_API_KEY}
+      GEMINI_MODEL:       ${GEMINI_MODEL:-gemini-2.5-flash}
+      MAX_EVALUATIONS:    ${MAX_EVALUATIONS:-}
