@@ -36,6 +36,8 @@ import os
 import pathlib
 import re
 
+import requests.exceptions
+
 from google import genai
 from google.genai import types as genai_types
 from telegram import Update
@@ -602,6 +604,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         reply = await loop.run_in_executor(None, search_pipeline, query, client)
+    except requests.exceptions.Timeout:
+        reply = "⏱️ Notion timed out — try again in a moment."
     except Exception as exc:
         logger.exception("search_pipeline error")
         reply = f"❌ Error: {_e(str(exc))}"
@@ -653,6 +657,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         reply = await loop.run_in_executor(
             None, badge_search_pipeline, name, company, role, client
         )
+    except requests.exceptions.Timeout:
+        reply = "⏱️ Notion timed out — try again in a moment."
     except Exception as exc:
         logger.exception("badge_search_pipeline error")
         reply = f"❌ Error: {_e(str(exc))}"
@@ -696,9 +702,21 @@ def run() -> None:
     logger.info("Model (scoring/opening lines): %s", GEMINI_MODEL)
     logger.info("Model (badge OCR):             %s", GEMINI_SCOUT_MODEL)
 
+    from telegram.error import Conflict
+
+    async def handle_conflict(update, context) -> None:
+        logger.error(
+            "Telegram Conflict — another bot instance is running. "
+            "Kill all other processes and restart."
+        )
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(
+        lambda update, context: handle_conflict(update, context)
+        if isinstance(context.error, Conflict) else None
+    )
 
     logger.info("Polling for messages…")
     app.run_polling(drop_pending_updates=True)
