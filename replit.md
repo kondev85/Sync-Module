@@ -1,14 +1,85 @@
-# [Project name]
+# BlocksRace Conference Scout
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A Telegram bot and data-pipeline toolkit that scrapes Swapcard attendees into Notion, enriches LinkedIn profiles, and evaluates companies with AI. The **Scout bot** runs 24/7 on a Linux VPS via Docker.
 
 ## Run & Operate
 
-### Swapcard → Notion sync (the real app: `swapcard_sync/`)
+### Conference Scout Bot — 24/7 Telegram bot (Docker on Linux VPS)
+
+The `bot` service in `docker-compose.yml` is the always-on core. It runs continuously with `restart: unless-stopped`, so Docker automatically restarts it after crashes or reboots.
+
+**First-time setup on your VPS:**
+
+1. Copy `.env.example` to `.env` and fill in all secrets (see Required secrets below).
+2. Place `my_profile.md` and `Connections.csv` in the **repo root** on the VPS (same folder as `docker-compose.yml`). These are mounted directly into the container — edit them on the VPS and they take effect without rebuilding.
+3. Build and start:
+   ```bash
+   docker compose up -d --build
+   ```
+4. Check it is running:
+   ```bash
+   docker compose ps
+   docker compose logs -f bot
+   ```
+
+**Day-to-day operations:**
+
+| Task | Command |
+|---|---|
+| Start bot (background) | `docker compose up -d bot` |
+| Stop bot | `docker compose stop bot` |
+| Restart bot | `docker compose restart bot` |
+| View live logs | `docker compose logs -f bot` |
+| Rebuild after code change | `docker compose up -d --build bot` |
+| Update data files only | Edit `my_profile.md` / `Connections.csv` in repo root — no rebuild needed, changes are live immediately via volume mount |
+
+**The bot stays running 24/7** — `restart: unless-stopped` means it survives crashes and server reboots automatically. You only need to touch it when you change code (rebuild) or secrets (restart).
+
+**Required secrets** (set in `.env` in the repo root on the VPS, never commit):
+- `TELEGRAM_BOT_TOKEN`
+- `NOTION_API_TOKEN`
+- `NOTION_DATABASE_ID`
+- `GEMINI_API_KEY`
+
+**Volume mounts (bot service):**
+```yaml
+volumes:
+  - .:/app
+  - ./my_profile.md:/app/my_profile.md
+  - ./Connections.csv:/app/Connections.csv
+```
+`my_profile.md` and `Connections.csv` must exist in the repo root on the VPS before starting the container.
+
+---
+
+### One-shot jobs (run manually via Docker)
+
+These use the `jobs` profile so they don't start automatically with `docker compose up`.
+
+```bash
+# Swapcard → Notion scraper
+docker compose run --rm scraper
+
+# LinkedIn enricher
+docker compose run --rm enricher
+
+# AI company evaluator
+docker compose run --rm evaluator
+```
+
+Override env vars inline:
+```bash
+docker compose run --rm -e MAX_CONTACTS=50 scraper
+docker compose run --rm -e MAX_LOOKUPS=10 enricher
+```
+
+---
+
+### Swapcard → Notion sync (without Docker, from Shell tab)
 
 Run from a **Shell tab** (foreground), not from the Agent — the Agent sandbox kills long-running processes after ~120s. A full ~5000-attendee run takes 1–2 hours.
 
-`python -u main.py` now shows an interactive menu: **[1]** Scraper & Sync, **[2]** Missing LinkedIn Finder & Enricher, **[3]** AI Company Evaluator. For scripted/non-interactive runs, set `RUN_MODE=scraper`, `RUN_MODE=enricher`, or `RUN_MODE=evaluator` to skip the menu.
+`python -u main.py` shows an interactive menu: **[1]** Scraper & Sync, **[2]** Missing LinkedIn Finder & Enricher, **[3]** AI Company Evaluator. For scripted/non-interactive runs, set `RUN_MODE=scraper`, `RUN_MODE=enricher`, or `RUN_MODE=evaluator` to skip the menu.
 
 - Full run (recommended pacing): `cd swapcard_sync && ENRICH_PROFILES=1 ROW_INSERT_INTERVAL=0.6 python -u main.py`
 - Resume after an interruption: add `SKIP_CONTACTS=<last index shown in logs minus ~20>` — a small overlap is safe (dedup updates, never duplicates) and avoids gaps if Swapcard's list order drifted.
@@ -36,6 +107,8 @@ Separate from the scraper but unified in the same project: finds Notion rows wit
   - **Adaptive back-off** is the main throttle-recovery mechanism: after a transient timeout/rate-limit the run pauses `SEARCH_COOLDOWN` (default **30s**) × consecutive-failure-count, capped at `SEARCH_COOLDOWN_MAX` (default **180s**), and resets to zero after the next clean search. This lets DDG recover instead of being poked at the same rhythm while it's throttling. Logged as `[cool ] backing off Ns…`.
   - If timeouts are still high, raise `SEARCH_INTERVAL` and/or `SEARCH_COOLDOWN`. A name+company match is a best guess, not a verified identity.
 
+---
+
 ### Scaffold commands (unused template — api-server/db)
 
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
@@ -47,32 +120,36 @@ Separate from the scraper but unified in the same project: finds Notion rows wit
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- **Bot/pipeline:** Python, Telegram Bot API, Gemini AI, Notion API, DuckDuckGo (`ddgs`)
+- **Deployment:** Docker + docker-compose on Linux VPS (Hetzner)
+- **Scaffold (unused):** pnpm workspaces, Node.js 24, TypeScript 5.9, Express 5, PostgreSQL + Drizzle ORM
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `swapcard_sync/` — all Python source: scraper, enricher, evaluator, bot
+- `docker-compose.yml` — service definitions; `bot` is always-on, `scraper`/`enricher`/`evaluator` are one-shot jobs
+- `Dockerfile` — multi-stage build, `runtime` target used by all services
+- `my_profile.md` — your profile fed to the Scout bot AI (place in repo root on VPS)
+- `Connections.csv` — LinkedIn connections export fed to the Scout bot (place in repo root on VPS)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **Bot runs 24/7 via Docker** (`restart: unless-stopped`) — survives crashes and reboots without manual intervention.
+- **Data files mounted as volumes** (not baked into the image) — `my_profile.md` and `Connections.csv` can be updated on the VPS without rebuilding the Docker image.
+- **One-shot jobs use Docker profiles** (`profiles: ["jobs"]`) — they never start automatically alongside the bot; triggered manually with `docker compose run --rm <service>`.
+- **DuckDuckGo for LinkedIn search** — no API key required; Google Custom Search abandoned after persistent 403 errors.
+- **Dedup by Name in Notion** — safe to re-run or overlap chunks; never creates duplicate rows.
 
-## Product
+## Gotchas
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- `my_profile.md` and `Connections.csv` **must exist in the repo root on the VPS** before running `docker compose up`, otherwise Docker will create them as empty directories.
+- The `bot` volume mounts the entire repo root (`.:/app`) — keep secrets in `.env` only, never in files tracked by git.
+- Long scraper runs (1–2 hours) must be run from a Shell tab or via Docker, not from the Replit Agent sandbox (killed after ~120s).
+- Swapcard Bearer token and cookie expire; refresh them from your browser's DevTools if the scraper starts failing.
 
 ## User preferences
 
 _Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
 
 ## Pointers
 

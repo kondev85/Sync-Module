@@ -26,10 +26,11 @@ services:
       # GEMINI_SCOUT_MODEL:  gemini-2.0-flash-lite
 
     # Mount local data files so you can update them without rebuilding the image.
-    # Place my_profile.md and Connections.csv in ./swapcard_sync/ on the VPS.
+    # Place my_profile.md and Connections.csv in the repo root on the VPS.
     volumes:
-      - ./swapcard_sync/my_profile.md:/app/swapcard_sync/my_profile.md:ro
-      - ./swapcard_sync/Connections.csv:/app/swapcard_sync/Connections.csv:ro
+      - .:/app
+      - ./my_profile.md:/app/my_profile.md
+      - ./Connections.csv:/app/Connections.csv
 
     logging:
       driver: "json-file"
