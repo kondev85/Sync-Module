@@ -17,8 +17,8 @@ GEMINI_API_KEY       — Google AI Studio key
 
 Optional env vars
 -----------------
-GEMINI_MODEL         — scoring / opening-line model (default: gemini-2.5-flash-lite)
-GEMINI_SCOUT_MODEL   — OCR model for badge scanning (default: gemini-2.0-flash-lite)
+GEMINI_MODEL         — scoring / opening-line model (default: gemini-3.1-flash-lite)
+GEMINI_SCOUT_MODEL   — OCR model for badge scanning (default: gemini-3.1-flash-lite)
 
 Local data files (place in swapcard_sync/ alongside this file)
 --------------------------------------------------------------
@@ -51,8 +51,8 @@ _BOT_DIR = pathlib.Path(__file__).parent
 
 TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL        = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
-GEMINI_SCOUT_MODEL  = os.environ.get("GEMINI_SCOUT_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL        = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_SCOUT_MODEL  = os.environ.get("GEMINI_SCOUT_MODEL", "gemini-3.1-flash-lite")
 
 MY_PROFILE_PATH     = _BOT_DIR / "my_profile.md"
 CONNECTIONS_PATH    = _BOT_DIR / "Connections.csv"
