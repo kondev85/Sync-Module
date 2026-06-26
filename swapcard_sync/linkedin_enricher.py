@@ -46,6 +46,9 @@ _TRANSIENT_SEARCH_KEYWORDS = (
     "rate limit",
     "ratelimit",
     "temporarily unavailable",
+    "unavailable",
+    "503",
+    "high demand",
     "winerror 10060",
     "failed to respond",
     "network",
@@ -669,15 +672,34 @@ def _gemini_search(query: str) -> list | None:
         "If genuinely no results found, return an empty array []."
     )
 
-    response = client.models.generate_content(
-        model=config.GEMINI_MODEL,
-        contents=prompt,
-        config=genai_types.GenerateContentConfig(
-            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-        ),
-    )
+    max_retries = max(1, int(os.environ.get("GEMINI_MAX_RETRIES", "5")))
 
-    text = response.text.strip()
+    def _is_gemini_transient(exc: Exception) -> bool:
+        blob = str(exc).lower()
+        return any(k in blob for k in ("429", "503", "resource_exhausted", "unavailable", "high demand", "rate"))
+
+    response = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model=config.GEMINI_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                ),
+            )
+            break
+        except Exception as exc:
+            if not _is_gemini_transient(exc) or attempt >= max_retries:
+                raise
+            delay = 30.0 * (attempt + 1) + random.uniform(1, 5)
+            print(
+                f"  [gemini] transient error ({exc!s:.80}) — waiting {delay:.0f}s "
+                f"then retrying (attempt {attempt + 1}/{max_retries})…"
+            )
+            time.sleep(delay)
+
+    text = response.text.strip()  # type: ignore[union-attr]
     # Strip markdown fences if the model added them despite instructions
     if text.startswith("```"):
         text = re.sub(r"^```[a-z]*\n?", "", text)

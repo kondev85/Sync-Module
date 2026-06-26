@@ -454,9 +454,12 @@ def _parse_retry_delay(exc: Exception) -> float | None:
 
 
 def _is_gemini_rate_limit(exc: Exception) -> bool:
-    """True when the exception is a Gemini 429 RESOURCE_EXHAUSTED."""
+    """True when the exception is a transient Gemini error worth retrying.
+
+    Covers 429 RESOURCE_EXHAUSTED (quota) and 503 UNAVAILABLE (high demand).
+    """
     blob = str(exc).lower()
-    return "429" in blob or "resource_exhausted" in blob or "rate" in blob
+    return any(k in blob for k in ("429", "503", "resource_exhausted", "unavailable", "high demand", "rate"))
 
 
 def _call_gemini(client: genai.Client, user_message: str) -> str:
