@@ -84,5 +84,5 @@ services:
       NOTION_API_TOKEN:   ${NOTION_API_TOKEN}
       NOTION_DATABASE_ID: ${NOTION_DATABASE_ID}
       GEMINI_API_KEY:     ${GEMINI_API_KEY}
-      GEMINI_MODEL:       ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL:       ${GEMINI_MODEL:-gemini-3.1-flash-lite}
       MAX_EVALUATIONS:    ${MAX_EVALUATIONS:-}
