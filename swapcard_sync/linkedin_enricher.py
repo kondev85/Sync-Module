@@ -663,12 +663,25 @@ def _serper_text(query: str) -> list | None:
 
 
 def _gemini_search(query: str) -> list | None:
-    """Use Gemini with Google Search grounding to run a search query.
+    """Use Gemini with Google Search grounding to find LinkedIn profiles.
 
-    Returns the same `[{"href": ..., "title": ..., "body": ...}]` format as
-    _ddg_text / _serper_text so the rest of the enricher stays backend-agnostic.
-    Returns None for a genuine "no results". Raises RuntimeError when
-    GEMINI_API_KEY is missing so the caller treats it as a permanent error.
+    Unlike DDG/Serper (which return a raw search-result list), Gemini with
+    Google Search grounding performs real Google searches internally and
+    surfaces the fetched URLs via grounding metadata.  Asking Gemini to
+    "return JSON" doesn't work — it generates an empty/hallucinated array
+    instead of real results.
+
+    The correct approach:
+      1. Send a natural-language prompt so Gemini fires real Google searches.
+      2. Extract actual URLs + titles from grounding_metadata.grounding_chunks.
+      3. Use Gemini's response text as the shared body for company
+         corroboration (Gemini's answer mentions the company when it finds
+         the right profile, giving _company_corroborated something to check).
+      4. Also scan the response text for any linkedin.com/in/ URLs Gemini
+         cited directly, as a belt-and-suspenders fallback.
+
+    Returns the same [{href, title, body}] format as _ddg_text / _serper_text.
+    Returns None for genuine "no results".
     """
     try:
         import google.genai as genai  # type: ignore
@@ -685,13 +698,15 @@ def _gemini_search(query: str) -> list | None:
         )
 
     client = genai.Client(api_key=api_key)
+
+    # Natural-language prompt: Gemini fires multiple Google searches on its own
+    # and picks the best LinkedIn match. The site: filter is in the ask, not a
+    # URL parameter, so Gemini actually uses it in its Google queries.
     prompt = (
-        f"Search Google for: {query}\n\n"
-        "Return the top search results as a JSON array (no markdown fences, "
-        "no commentary — just the raw array):\n"
-        '[{"href": "https://...", "title": "page title", "body": "short snippet"}, ...]\n\n'
-        "Include up to 8 results. Only include entries with a valid https:// href. "
-        "If genuinely no results found, return an empty array []."
+        f"Search Google for the LinkedIn profile of this person: {query}\n\n"
+        "Use Google Search to find their linkedin.com/in/ profile URL. "
+        "In your answer include the full LinkedIn profile URL and the person's "
+        "current job title and company as shown on their profile."
     )
 
     max_retries = max(1, int(os.environ.get("GEMINI_MAX_RETRIES", "5")))
@@ -721,27 +736,39 @@ def _gemini_search(query: str) -> list | None:
             )
             time.sleep(delay)
 
-    raw_text = response.text if response is not None else None  # type: ignore[union-attr]
-    if not raw_text:
+    if response is None:
         return None
-    text = raw_text.strip()
-    # Strip markdown fences if the model added them despite instructions
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-z]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
 
-    parsed = json.loads(text)
-    if not parsed:
-        return None
-    return [
-        {
-            "href":  str(r.get("href", "")),
-            "title": str(r.get("title", "")),
-            "body":  str(r.get("body", "")),
-        }
-        for r in parsed
-        if r.get("href")
-    ] or None
+    # Gemini's text answer — used as the shared body for all results so that
+    # _company_corroborated has something meaningful to search in.
+    response_text = (response.text or "").strip()
+
+    # ── Extract real URLs from grounding metadata ────────────────────────────
+    seen: set[str] = set()
+    results: list[dict] = []
+
+    for candidate in (response.candidates or []):
+        meta = getattr(candidate, "grounding_metadata", None)
+        if not meta:
+            continue
+        for chunk in getattr(meta, "grounding_chunks", []):
+            web = getattr(chunk, "web", None)
+            if not web:
+                continue
+            href = (getattr(web, "uri", "") or "").strip()
+            title = (getattr(web, "title", "") or "").strip()
+            if href and href not in seen:
+                seen.add(href)
+                results.append({"href": href, "title": title, "body": response_text})
+
+    # ── Fallback: scan Gemini's text for any LinkedIn URLs it cited ──────────
+    for m in re.finditer(r"https?://(?:www\.)?linkedin\.com/in/[^\s\"'<>)\]]+", response_text):
+        href = m.group(0).rstrip(".,;:)")
+        if href not in seen:
+            seen.add(href)
+            results.append({"href": href, "title": "", "body": response_text})
+
+    return results or None
 
 
 def _search_text(query: str) -> list | None:
