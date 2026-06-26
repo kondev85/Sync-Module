@@ -76,18 +76,33 @@ def _load_my_profile() -> str:
 
 
 def _load_connections() -> set[str]:
-    """Return lowercase full-name set from a LinkedIn Connections CSV export."""
+    """Return lowercase full-name set from a LinkedIn Connections CSV export.
+
+    LinkedIn prepends 3 note lines before the real header row
+    (Notes: / long disclaimer / blank). We skip everything until the line
+    that actually contains 'First Name' and 'Last Name'.
+    """
     names: set[str] = set()
     if not CONNECTIONS_PATH.exists():
         return names
     with open(CONNECTIONS_PATH, newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            first = (row.get("First Name") or "").strip()
-            last  = (row.get("Last Name")  or "").strip()
-            full  = f"{first} {last}".strip()
-            if full:
-                names.add(full.lower())
+        all_lines = fh.readlines()
+
+    # Find the real header row — first line containing both column names
+    start = 0
+    for i, line in enumerate(all_lines):
+        if "First Name" in line and "Last Name" in line:
+            start = i
+            break
+
+    import io as _io
+    reader = csv.DictReader(_io.StringIO("".join(all_lines[start:])))
+    for row in reader:
+        first = (row.get("First Name") or "").strip()
+        last  = (row.get("Last Name")  or "").strip()
+        full  = f"{first} {last}".strip()
+        if full:
+            names.add(full.lower())
     return names
 
 
@@ -167,57 +182,61 @@ def gemini_score_grounded(client: genai.Client, name: str, company: str, role: s
         return {"company_type": "unknown", "score": 0, "rationale": f"Gemini error: {exc}"}
 
 
-def gemini_research_contact(client: genai.Client, contact: dict) -> dict:
+def gemini_intel_brief(client: genai.Client, contact: dict) -> dict:
     """
-    Use Gemini with Google Search grounding to research the contact online.
-
-    Searches for news, articles, talks, and a photo URL for this person,
-    then generates 2 opening lines rooted in REAL discovered touchpoints —
-    never generic product pitches.
+    Use Gemini with Google Search grounding to produce a raw strategic
+    intelligence brief on the contact and their company.
 
     Returns dict:
-      lines     — list of 2 opening lines (empty list if MY_PROFILE not loaded)
-      photo_url — URL of a page where their face/profile is visible (or "")
-      context   — 1-2 sentence summary of what was found online (or "")
+      bullets   — list of 3-4 high-density fact strings (empty on failure)
+      photo_url — URL of a page where the person's profile/face is visible (or "")
     """
-    if not MY_PROFILE:
-        return {"lines": [], "photo_url": "", "context": ""}
-
     name     = contact.get("name", "")
     company  = contact.get("company", "")
     role     = contact.get("role", "")
     category = contact.get("ai_category", "")
 
-    prompt = f"""Search the web for this person and help me prepare a genuine conference conversation.
+    prompt = f"""You are a B2B intelligence analyst preparing a pre-meeting briefing.
+Use your live Google Search access to research this person and their company RIGHT NOW.
 
-PERSON TO RESEARCH:
+SUBJECT:
   Name:         {name}
   Company:      {company}
   Role:         {role}
   Company type: {category}
 
-MY BACKGROUND (I am the one starting the conversation):
-{MY_PROFILE}
+YOUR MISSION — two tasks:
 
-YOUR TASKS:
-1. Search for recent articles, LinkedIn activity, conference talks, interviews, or posts by or about {name} at {company}.
-2. Find a URL where this person's face or profile photo is visible — their LinkedIn /in/ profile page, company team/about page, Twitter/X profile, or a speaker bio page. Return the page URL (not a direct image file URL).
-3. Identify genuine mutual touchpoints between me and this person:
-   - Overlapping geography (same cities, countries, or regions we've both worked in)
-   - Past companies or industry events we've both been associated with
-   - Shared professional topics, challenges, or recent news they're involved in
-4. Write exactly 2 short, natural opening lines I can say on the conference floor.
-   STRICT RULES:
-   - Ground each line in something REAL you found — a specific article, event, location, or shared experience
-   - Do NOT mention BlocksRace products or make any sales pitch
-   - Sound like a genuine human — curious and specific, not flattering or generic
-   - Maximum 2 sentences each
+TASK 1 — STRATEGIC INTELLIGENCE BRIEF
+Search for the 3 to 4 most recent and actionable facts about this person or their company.
+Prioritise in this order:
+  1. Major press releases, M&A activity, funding rounds, or regulatory news (last 6 months)
+  2. New product launches, platform updates, game/content integrations, or tech partnerships
+  3. Executive interviews, keynote topics, panel discussions, or recent LinkedIn posts
+  4. Market expansion moves, new geography launches, or major marketing campaigns
+
+OUTPUT RULES — these are strict:
+  - Each bullet must be a raw, dense, factual statement. No softening, no interpretation.
+  - Include specific numbers, dates, company names, and deal values wherever found.
+  - Do NOT convert facts into conversation starters or suggestions. Just the intel.
+  - If a fact has a direct source URL, append it in parentheses at the end of the bullet.
+  - If you cannot find recent news for the individual, shift focus entirely to the company.
+  - If nothing meaningful is found, return fewer bullets rather than invent vague ones.
+
+TASK 2 — PROFILE PHOTO LINK
+Find a URL where this person's face or profile photo is visible:
+LinkedIn /in/ profile page, company team/about page, Twitter/X profile, or speaker bio.
+Return the page URL only (not a direct image file URL). Empty string if not found.
 
 Return ONLY valid JSON with no markdown fences:
 {{
-  "lines": ["opening line 1", "opening line 2"],
-  "photo_url": "https://... or empty string if not found",
-  "context": "1-2 sentence summary of what you found about this person online"
+  "bullets": [
+    "Fact 1 — dense, specific, with source URL if available",
+    "Fact 2 — ...",
+    "Fact 3 — ...",
+    "Fact 4 — ..."
+  ],
+  "photo_url": "https://... or empty string"
 }}"""
 
     try:
@@ -228,21 +247,16 @@ Return ONLY valid JSON with no markdown fences:
                 tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
             ),
         )
-        result = json.loads(_strip_fences(response.text))
-        raw_lines = result.get("lines", [])
-        lines = (
-            [str(raw_lines[0]).strip(), str(raw_lines[1]).strip()]
-            if isinstance(raw_lines, list) and len(raw_lines) >= 2
-            else []
-        )
+        result  = json.loads(_strip_fences(response.text))
+        raw     = result.get("bullets", [])
+        bullets = [str(b).strip() for b in raw if str(b).strip()] if isinstance(raw, list) else []
         return {
-            "lines":     lines,
+            "bullets":   bullets,
             "photo_url": str(result.get("photo_url", "")).strip(),
-            "context":   str(result.get("context", "")).strip(),
         }
     except Exception as exc:
-        logger.warning("gemini_research_contact error: %s", exc)
-        return {"lines": [], "photo_url": "", "context": ""}
+        logger.warning("gemini_intel_brief error: %s", exc)
+        return {"bullets": [], "photo_url": ""}
 
 
 def gemini_ocr_badge(client: genai.Client, image_bytes: bytes) -> dict:
@@ -376,8 +390,7 @@ def _linkedin_line(contact: dict) -> str:
 
 def format_single_profile(contact: dict, intel: dict, connected: bool) -> str:
     """
-    intel — dict returned by gemini_research_contact:
-      lines, photo_url, context
+    intel — dict returned by gemini_intel_brief: bullets, photo_url
     """
     score_raw = contact.get("ai_score", "")
     emoji = _score_emoji(score_raw)
@@ -411,17 +424,12 @@ def format_single_profile(contact: dict, intel: dict, connected: bool) -> str:
     if photo_url:
         lines.append(f'🖼️ <a href="{_e(photo_url)}">View profile / photo</a>')
 
-    context = (intel or {}).get("context", "")
-    if context:
+    bullets = (intel or {}).get("bullets", [])
+    if bullets:
         lines.append("")
-        lines.append(f"🔎 <i>{_e(context)}</i>")
-
-    opening = (intel or {}).get("lines", [])
-    if opening:
-        lines.append("")
-        lines.append("🗣️ <b>Opening lines:</b>")
-        for i, line in enumerate(opening, 1):
-            lines.append(f"{i}. {_e(line)}")
+        lines.append("🔥 <b>Latest Intel &amp; Strategic Insights:</b>")
+        for b in bullets:
+            lines.append(f"• {_e(b)}")
 
     return "\n".join(lines)
 
@@ -469,7 +477,7 @@ def format_gemini_fallback(
     name: str, company: str, role: str,
     eval_result: dict, intel: dict, connected: bool,
 ) -> str:
-    """intel — dict returned by gemini_research_contact: lines, photo_url, context."""
+    """intel — dict returned by gemini_intel_brief: bullets, photo_url."""
     emoji = _score_emoji(eval_result.get("score", 0))
     lines = []
 
@@ -500,17 +508,12 @@ def format_gemini_fallback(
     if photo_url:
         lines.append(f'🖼️ <a href="{_e(photo_url)}">View profile / photo</a>')
 
-    context = (intel or {}).get("context", "")
-    if context:
+    bullets = (intel or {}).get("bullets", [])
+    if bullets:
         lines.append("")
-        lines.append(f"🔎 <i>{_e(context)}</i>")
-
-    opening = (intel or {}).get("lines", [])
-    if opening:
-        lines.append("")
-        lines.append("🗣️ <b>Opening lines:</b>")
-        for i, line in enumerate(opening, 1):
-            lines.append(f"{i}. {_e(line)}")
+        lines.append("🔥 <b>Latest Intel &amp; Strategic Insights:</b>")
+        for b in bullets:
+            lines.append(f"• {_e(b)}")
 
     return "\n".join(lines)
 
@@ -533,7 +536,7 @@ def search_pipeline(query: str, client: genai.Client) -> str:
     if results:
         c = results[0]
         connected = is_connected(c.get("name", ""))
-        intel     = gemini_research_contact(client, c)
+        intel     = gemini_intel_brief(client, c)
         return format_single_profile(c, intel, connected)
 
     # 2. Company search
@@ -543,7 +546,7 @@ def search_pipeline(query: str, client: genai.Client) -> str:
     if len(company_hits) == 1:
         c = company_hits[0]
         connected = is_connected(c.get("name", ""))
-        intel     = gemini_research_contact(client, c)
+        intel     = gemini_intel_brief(client, c)
         return format_single_profile(c, intel, connected)
 
     # 3. Fuzzy name contains
@@ -553,13 +556,13 @@ def search_pipeline(query: str, client: genai.Client) -> str:
     if len(fuzzy) == 1:
         c = fuzzy[0]
         connected = is_connected(c.get("name", ""))
-        intel     = gemini_research_contact(client, c)
+        intel     = gemini_intel_brief(client, c)
         return format_single_profile(c, intel, connected)
 
-    # 4. Gemini Search Grounding fallback — score the company AND research the person
+    # 4. Gemini fallback — score company AND pull intel brief in one grounded pass
     eval_result = gemini_score_grounded(client, name=query, company=query, role="")
     connected   = is_connected(query)
-    intel       = gemini_research_contact(client, {
+    intel       = gemini_intel_brief(client, {
         "name": query, "company": query, "role": "",
         "ai_category": eval_result.get("company_type", ""),
     })
@@ -579,12 +582,12 @@ def badge_search_pipeline(name: str, company: str, role: str, client: genai.Clie
     if len(results) == 1:
         c = results[0]
         connected = is_connected(c.get("name", ""))
-        intel     = gemini_research_contact(client, c)
+        intel     = gemini_intel_brief(client, c)
         return format_single_profile(c, intel, connected)
 
     eval_result = gemini_score_grounded(client, name, company, role)
     connected   = is_connected(name)
-    intel       = gemini_research_contact(client, {
+    intel       = gemini_intel_brief(client, {
         "name": name, "company": company, "role": role,
         "ai_category": eval_result.get("company_type", ""),
     })
