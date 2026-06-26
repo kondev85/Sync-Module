@@ -55,7 +55,7 @@ EVAL_STATUS_ERROR   = "Error"
 # ── Run settings ──────────────────────────────────────────────────────────────
 MAX_EVALUATIONS = max(0, int(os.environ.get("MAX_EVALUATIONS", "0")))  # 0 = unlimited
 EVAL_INTERVAL   = max(0.0, float(os.environ.get("EVAL_INTERVAL", "3.0")))
-GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 # ── Gemini system prompt ──────────────────────────────────────────────────────
 _SYSTEM_PROMPT = """You are a B2B lead qualifier for BlocksRace, a company that provides

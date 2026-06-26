@@ -1,24 +1,38 @@
 # My Conference Profile
 
 ## Background
-- Bulgarian, currently living in Spain
-- Previously based in Gibraltar — deep familiarity with the Gibraltar iGaming cluster
-- Working in the iGaming / sports betting industry
 
-## Company
-- BlocksRace — B2B provider of innovative betting markets and live sports content
-- We sell betting content and markets to casino operators, sportsbooks, and iGaming platforms
+Konstantin Kondev, Bulgarian, currently based in Spain.
+
+Over 10 years of experience in technology and iGaming, including roles at Playtech in Gibraltar and The Workshop in Málaga. Worked across sportsbook, casino, live casino, platform, and infrastructure projects in regulated markets including Spain, Italy, Netherlands, Ontario, Pennsylvania, Brazil, and APAC.
+
+Previously lived and worked in Gibraltar and maintain strong familiarity with the Gibraltar iGaming ecosystem.
+
+Long-time Bitcoin enthusiast since 2017 with a particular interest in blockchain transparency, probability, prediction markets, and gaming innovation.
+
+## Current Company
+
+Co-Founder & COO of BlocksRace.
+
+BlocksRace is building a new category of betting markets based on Bitcoin mining events. The platform generates markets, odds, and settlement using publicly verifiable blockchain data.
+
+The vision is to turn the world's most transparent and provably fair competition — Bitcoin mining — into an engaging prediction market for casino operators, sportsbooks, sweepstakes operators, and crypto gaming platforms.
 
 ## Talking Points
-- Built products in regulated markets across Europe
-- Network across Gibraltar, Malta, and Spain iGaming hubs
-- Interest in casino operators, sportsbooks, and platforms actively expanding their betting content
 
-## What I'm looking for at this conference
-- Casino operators and sportsbooks who want richer or more differentiated betting markets
-- Tech platforms that could integrate or white-label our content feed
-- Potential VC / crypto investors with iGaming interest
+* Bitcoin mining as a new betting and prediction market category
+* Provably fair gaming and transparent market settlement
+* Product development from concept to commercialisation
+* iGaming innovation and player engagement
+* Crypto gambling and sweepstakes opportunities
+* Gibraltar, Malta, and Spain gaming ecosystems
+* Startup building, fundraising, and operator integrations
+* Sportsbook and casino product strategy
 
----
-_Edit this file with your real background before the conference.
-The bot reads it on every Gemini call, so keep it concise (under 300 words)._
+## Looking For
+
+* Casino operators and sportsbooks interested in differentiated betting content
+* Platform providers, aggregators, and PAM suppliers
+* Crypto casinos and sweepstakes operators
+* Investors with interest in iGaming, prediction markets, or blockchain products
+* Industry professionals interested in innovation, product development, and emerging betting categories

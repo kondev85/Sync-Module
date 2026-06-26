@@ -17,7 +17,7 @@ GEMINI_API_KEY       — Google AI Studio key
 
 Optional env vars
 -----------------
-GEMINI_MODEL         — scoring / opening-line model (default: gemini-2.5-flash)
+GEMINI_MODEL         — scoring / opening-line model (default: gemini-2.5-flash-lite)
 GEMINI_SCOUT_MODEL   — OCR model for badge scanning (default: gemini-2.0-flash-lite)
 
 Local data files (place in swapcard_sync/ alongside this file)
@@ -51,8 +51,8 @@ _BOT_DIR = pathlib.Path(__file__).parent
 
 TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL        = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-GEMINI_SCOUT_MODEL  = os.environ.get("GEMINI_SCOUT_MODEL", "gemini-2.0-flash-lite")
+GEMINI_MODEL        = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_SCOUT_MODEL  = os.environ.get("GEMINI_SCOUT_MODEL", "gemini-2.5-flash-lite")
 
 MY_PROFILE_PATH     = _BOT_DIR / "my_profile.md"
 CONNECTIONS_PATH    = _BOT_DIR / "Connections.csv"
@@ -165,33 +165,82 @@ def gemini_score_grounded(client: genai.Client, name: str, company: str, role: s
         return {"company_type": "unknown", "score": 0, "rationale": f"Gemini error: {exc}"}
 
 
-def gemini_opening_lines(client: genai.Client, contact: dict) -> list[str]:
+def gemini_research_contact(client: genai.Client, contact: dict) -> dict:
     """
-    Generate 2 personalised opening lines using my_profile.md context.
-    Returns a list of up to 2 strings; empty list if profile not loaded.
+    Use Gemini with Google Search grounding to research the contact online.
+
+    Searches for news, articles, talks, and a photo URL for this person,
+    then generates 2 opening lines rooted in REAL discovered touchpoints —
+    never generic product pitches.
+
+    Returns dict:
+      lines     — list of 2 opening lines (empty list if MY_PROFILE not loaded)
+      photo_url — URL of a page where their face/profile is visible (or "")
+      context   — 1-2 sentence summary of what was found online (or "")
     """
     if not MY_PROFILE:
-        return []
-    prompt = (
-        f"My background (I will start this conversation):\n{MY_PROFILE}\n\n"
-        f"Person I am about to meet at a conference:\n"
-        f"  Name:         {contact.get('name', '')}\n"
-        f"  Company:      {contact.get('company', '')}\n"
-        f"  Role:         {contact.get('role', '')}\n"
-        f"  Company type: {contact.get('ai_category', '')}\n\n"
-        "Write exactly 2 short, natural opening lines I can say on the conference floor. "
-        "Look for genuine mutual touchpoints (geography, background, industry overlap). "
-        "Each line must be 1–2 sentences. "
-        "Return ONLY a JSON array of 2 strings: [\"line1\", \"line2\"]"
-    )
+        return {"lines": [], "photo_url": "", "context": ""}
+
+    name     = contact.get("name", "")
+    company  = contact.get("company", "")
+    role     = contact.get("role", "")
+    category = contact.get("ai_category", "")
+
+    prompt = f"""Search the web for this person and help me prepare a genuine conference conversation.
+
+PERSON TO RESEARCH:
+  Name:         {name}
+  Company:      {company}
+  Role:         {role}
+  Company type: {category}
+
+MY BACKGROUND (I am the one starting the conversation):
+{MY_PROFILE}
+
+YOUR TASKS:
+1. Search for recent articles, LinkedIn activity, conference talks, interviews, or posts by or about {name} at {company}.
+2. Find a URL where this person's face or profile photo is visible — their LinkedIn /in/ profile page, company team/about page, Twitter/X profile, or a speaker bio page. Return the page URL (not a direct image file URL).
+3. Identify genuine mutual touchpoints between me and this person:
+   - Overlapping geography (same cities, countries, or regions we've both worked in)
+   - Past companies or industry events we've both been associated with
+   - Shared professional topics, challenges, or recent news they're involved in
+4. Write exactly 2 short, natural opening lines I can say on the conference floor.
+   STRICT RULES:
+   - Ground each line in something REAL you found — a specific article, event, location, or shared experience
+   - Do NOT mention BlocksRace products or make any sales pitch
+   - Sound like a genuine human — curious and specific, not flattering or generic
+   - Maximum 2 sentences each
+
+Return ONLY valid JSON with no markdown fences:
+{{
+  "lines": ["opening line 1", "opening line 2"],
+  "photo_url": "https://... or empty string if not found",
+  "context": "1-2 sentence summary of what you found about this person online"
+}}"""
+
     try:
-        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        lines = json.loads(_strip_fences(response.text))
-        if isinstance(lines, list) and len(lines) >= 2:
-            return [str(lines[0]).strip(), str(lines[1]).strip()]
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+            ),
+        )
+        result = json.loads(_strip_fences(response.text))
+        raw_lines = result.get("lines", [])
+        lines = (
+            [str(raw_lines[0]).strip(), str(raw_lines[1]).strip()]
+            if isinstance(raw_lines, list) and len(raw_lines) >= 2
+            else []
+        )
+        return {
+            "lines":     lines,
+            "photo_url": str(result.get("photo_url", "")).strip(),
+            "context":   str(result.get("context", "")).strip(),
+        }
     except Exception as exc:
-        logger.warning("gemini_opening_lines error: %s", exc)
-    return []
+        logger.warning("gemini_research_contact error: %s", exc)
+        return {"lines": [], "photo_url": "", "context": ""}
 
 
 def gemini_ocr_badge(client: genai.Client, image_bytes: bytes) -> dict:
@@ -323,7 +372,11 @@ def _linkedin_line(contact: dict) -> str:
     return "🔗 LinkedIn: not in database"
 
 
-def format_single_profile(contact: dict, opening_lines: list[str], connected: bool) -> str:
+def format_single_profile(contact: dict, intel: dict, connected: bool) -> str:
+    """
+    intel — dict returned by gemini_research_contact:
+      lines, photo_url, context
+    """
     score_raw = contact.get("ai_score", "")
     emoji = _score_emoji(score_raw)
     lines = []
@@ -352,10 +405,20 @@ def format_single_profile(contact: dict, opening_lines: list[str], connected: bo
 
     lines.append(_linkedin_line(contact))
 
-    if opening_lines:
+    photo_url = (intel or {}).get("photo_url", "")
+    if photo_url:
+        lines.append(f'🖼️ <a href="{_e(photo_url)}">View profile / photo</a>')
+
+    context = (intel or {}).get("context", "")
+    if context:
+        lines.append("")
+        lines.append(f"🔎 <i>{_e(context)}</i>")
+
+    opening = (intel or {}).get("lines", [])
+    if opening:
         lines.append("")
         lines.append("🗣️ <b>Opening lines:</b>")
-        for i, line in enumerate(opening_lines, 1):
+        for i, line in enumerate(opening, 1):
             lines.append(f"{i}. {_e(line)}")
 
     return "\n".join(lines)
@@ -402,8 +465,9 @@ def format_company_results(query: str, contacts: list[dict]) -> str:
 
 def format_gemini_fallback(
     name: str, company: str, role: str,
-    eval_result: dict, opening_lines: list[str], connected: bool,
+    eval_result: dict, intel: dict, connected: bool,
 ) -> str:
+    """intel — dict returned by gemini_research_contact: lines, photo_url, context."""
     emoji = _score_emoji(eval_result.get("score", 0))
     lines = []
 
@@ -430,10 +494,20 @@ def format_gemini_fallback(
     if rat:
         lines.append(f"💡 {_e(rat)}")
 
-    if opening_lines:
+    photo_url = (intel or {}).get("photo_url", "")
+    if photo_url:
+        lines.append(f'🖼️ <a href="{_e(photo_url)}">View profile / photo</a>')
+
+    context = (intel or {}).get("context", "")
+    if context:
+        lines.append("")
+        lines.append(f"🔎 <i>{_e(context)}</i>")
+
+    opening = (intel or {}).get("lines", [])
+    if opening:
         lines.append("")
         lines.append("🗣️ <b>Opening lines:</b>")
-        for i, line in enumerate(opening_lines, 1):
+        for i, line in enumerate(opening, 1):
             lines.append(f"{i}. {_e(line)}")
 
     return "\n".join(lines)
@@ -457,8 +531,8 @@ def search_pipeline(query: str, client: genai.Client) -> str:
     if results:
         c = results[0]
         connected = is_connected(c.get("name", ""))
-        opening   = gemini_opening_lines(client, c)
-        return format_single_profile(c, opening, connected)
+        intel     = gemini_research_contact(client, c)
+        return format_single_profile(c, intel, connected)
 
     # 2. Company search
     company_hits = search_by_company(query)
@@ -467,8 +541,8 @@ def search_pipeline(query: str, client: genai.Client) -> str:
     if len(company_hits) == 1:
         c = company_hits[0]
         connected = is_connected(c.get("name", ""))
-        opening   = gemini_opening_lines(client, c)
-        return format_single_profile(c, opening, connected)
+        intel     = gemini_research_contact(client, c)
+        return format_single_profile(c, intel, connected)
 
     # 3. Fuzzy name contains
     fuzzy = search_by_name_fuzzy(query)
@@ -477,17 +551,17 @@ def search_pipeline(query: str, client: genai.Client) -> str:
     if len(fuzzy) == 1:
         c = fuzzy[0]
         connected = is_connected(c.get("name", ""))
-        opening   = gemini_opening_lines(client, c)
-        return format_single_profile(c, opening, connected)
+        intel     = gemini_research_contact(client, c)
+        return format_single_profile(c, intel, connected)
 
-    # 4. Gemini Search Grounding fallback
+    # 4. Gemini Search Grounding fallback — score the company AND research the person
     eval_result = gemini_score_grounded(client, name=query, company=query, role="")
     connected   = is_connected(query)
-    opening     = gemini_opening_lines(client, {
+    intel       = gemini_research_contact(client, {
         "name": query, "company": query, "role": "",
         "ai_category": eval_result.get("company_type", ""),
     })
-    return format_gemini_fallback(query, query, "", eval_result, opening, connected)
+    return format_gemini_fallback(query, query, "", eval_result, intel, connected)
 
 
 def badge_search_pipeline(name: str, company: str, role: str, client: genai.Client) -> str:
@@ -503,16 +577,16 @@ def badge_search_pipeline(name: str, company: str, role: str, client: genai.Clie
     if len(results) == 1:
         c = results[0]
         connected = is_connected(c.get("name", ""))
-        opening   = gemini_opening_lines(client, c)
-        return format_single_profile(c, opening, connected)
+        intel     = gemini_research_contact(client, c)
+        return format_single_profile(c, intel, connected)
 
     eval_result = gemini_score_grounded(client, name, company, role)
     connected   = is_connected(name)
-    opening     = gemini_opening_lines(client, {
+    intel       = gemini_research_contact(client, {
         "name": name, "company": company, "role": role,
         "ai_category": eval_result.get("company_type", ""),
     })
-    return format_gemini_fallback(name, company, role, eval_result, opening, connected)
+    return format_gemini_fallback(name, company, role, eval_result, intel, connected)
 
 
 # ── Telegram handlers ─────────────────────────────────────────────────────────
