@@ -15,6 +15,7 @@ keep a per-run cap (config.MAX_LOOKUPS). Per-contact error isolation means one
 failure never aborts the run.
 """
 
+import json
 import random
 import re
 import time
@@ -189,7 +190,8 @@ def name_matches_profile(name: str, href: str, title: str) -> bool:
 def validate() -> None:
     """Ensure the secrets this enricher needs are present.
 
-    DuckDuckGo needs no credentials; Serper requires SERPER_API_KEY.
+    DuckDuckGo needs no credentials; Serper requires SERPER_API_KEY;
+    Gemini requires GEMINI_API_KEY.
     """
     required: dict = {
         "NOTION_API_TOKEN": config.NOTION_API_TOKEN,
@@ -197,6 +199,8 @@ def validate() -> None:
     }
     if config.SEARCH_BACKEND == "serper":
         required["SERPER_API_KEY"] = config.SERPER_API_KEY
+    if config.SEARCH_BACKEND == "gemini":
+        required["GEMINI_API_KEY"] = config.GEMINI_API_KEY
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise RuntimeError(
@@ -473,11 +477,14 @@ def _paced_sleep() -> None:
     """Wait between searches using the active backend's interval and jitter.
 
     DDG needs a slow, heavily jittered cadence to avoid throttling.
-    Serper is a paid REST API — 1 s with minimal jitter is fine.
+    Serper and Gemini are managed APIs — a light 1 s pause is fine.
     """
     if config.SEARCH_BACKEND == "serper":
         base = config.SERPER_SEARCH_INTERVAL
         jitter = config.SERPER_SEARCH_JITTER
+    elif config.SEARCH_BACKEND == "gemini":
+        base = config.GEMINI_SEARCH_INTERVAL
+        jitter = config.GEMINI_SEARCH_JITTER
     else:
         base = config.SEARCH_INTERVAL
         jitter = config.SEARCH_JITTER
@@ -523,14 +530,19 @@ def _is_transient_search_error(exc: BaseException) -> bool:
 def _search_cooldown_seconds(consecutive_errors: int) -> float:
     """Escalating pause after consecutive search failures, with random jitter.
 
-    Uses the active backend's cooldown settings — Serper's are much shorter
-    than DDG's because the paid API recovers faster and errors are rarer.
+    Uses the active backend's cooldown settings — Serper/Gemini are much shorter
+    than DDG's because managed APIs recover faster and errors are rarer.
     """
     if config.SEARCH_BACKEND == "serper":
         cooldown_after = config.SERPER_SEARCH_COOLDOWN_AFTER
         cooldown = config.SERPER_SEARCH_COOLDOWN
         cooldown_max = config.SERPER_SEARCH_COOLDOWN_MAX
         cooldown_jitter = config.SERPER_SEARCH_COOLDOWN_JITTER
+    elif config.SEARCH_BACKEND == "gemini":
+        cooldown_after = config.GEMINI_SEARCH_COOLDOWN_AFTER
+        cooldown = config.GEMINI_SEARCH_COOLDOWN
+        cooldown_max = config.GEMINI_SEARCH_COOLDOWN_MAX
+        cooldown_jitter = config.GEMINI_SEARCH_COOLDOWN_JITTER
     else:
         cooldown_after = config.SEARCH_COOLDOWN_AFTER
         cooldown = config.SEARCH_COOLDOWN
@@ -550,7 +562,12 @@ def _maybe_search_cooldown(consecutive_errors: int) -> None:
     cooldown = _search_cooldown_seconds(consecutive_errors)
     if cooldown <= 0:
         return
-    backend_label = "Serper" if config.SEARCH_BACKEND == "serper" else "DuckDuckGo"
+    if config.SEARCH_BACKEND == "serper":
+        backend_label = "Serper"
+    elif config.SEARCH_BACKEND == "gemini":
+        backend_label = "Gemini"
+    else:
+        backend_label = "DuckDuckGo"
     print(
         f"  [cool ] backing off {cooldown:.0f}s after "
         f"{consecutive_errors} consecutive search error(s) "
@@ -620,10 +637,72 @@ def _serper_text(query: str) -> list | None:
     ]
 
 
+def _gemini_search(query: str) -> list | None:
+    """Use Gemini with Google Search grounding to run a search query.
+
+    Returns the same `[{"href": ..., "title": ..., "body": ...}]` format as
+    _ddg_text / _serper_text so the rest of the enricher stays backend-agnostic.
+    Returns None for a genuine "no results". Raises RuntimeError when
+    GEMINI_API_KEY is missing so the caller treats it as a permanent error.
+    """
+    try:
+        import google.genai as genai  # type: ignore
+        import google.genai.types as genai_types  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "google-genai package not installed. Run: pip install google-genai"
+        ) from exc
+
+    api_key = config.GEMINI_API_KEY
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set — required for the Gemini search backend."
+        )
+
+    client = genai.Client(api_key=api_key)
+    prompt = (
+        f"Search Google for: {query}\n\n"
+        "Return the top search results as a JSON array (no markdown fences, "
+        "no commentary — just the raw array):\n"
+        '[{"href": "https://...", "title": "page title", "body": "short snippet"}, ...]\n\n'
+        "Include up to 8 results. Only include entries with a valid https:// href. "
+        "If genuinely no results found, return an empty array []."
+    )
+
+    response = client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+        ),
+    )
+
+    text = response.text.strip()
+    # Strip markdown fences if the model added them despite instructions
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+
+    parsed = json.loads(text)
+    if not parsed:
+        return None
+    return [
+        {
+            "href":  str(r.get("href", "")),
+            "title": str(r.get("title", "")),
+            "body":  str(r.get("body", "")),
+        }
+        for r in parsed
+        if r.get("href")
+    ] or None
+
+
 def _search_text(query: str) -> list | None:
-    """Dispatch to the configured search backend (DDG or Serper)."""
+    """Dispatch to the configured search backend (DDG, Serper, or Gemini)."""
     if config.SEARCH_BACKEND == "serper":
         return _serper_text(query)
+    if config.SEARCH_BACKEND == "gemini":
+        return _gemini_search(query)
     return _ddg_text(query)
 
 
@@ -720,7 +799,12 @@ def run() -> None:
         print("No contacts are missing a LinkedIn profile. Nothing to do.")
         return
 
-    backend_label = "Serper" if config.SEARCH_BACKEND == "serper" else "DuckDuckGo"
+    if config.SEARCH_BACKEND == "serper":
+        backend_label = "Serper"
+    elif config.SEARCH_BACKEND == "gemini":
+        backend_label = "Gemini"
+    else:
+        backend_label = "DuckDuckGo"
     max_lookups = config.MAX_LOOKUPS  # may be overridden by interactive prompt
     if max_lookups == 0:
         print(

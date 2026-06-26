@@ -110,12 +110,18 @@ SKIP_CONTACTS = max(0, int(os.environ.get("SKIP_CONTACTS", "0")))
 # commands, cron). Unset = show the [1]/[2] menu.
 RUN_MODE = os.environ.get("RUN_MODE", "").strip().lower()
 
+# === Gemini API (shared by company evaluator, Telegram bot, and LinkedIn enricher) ===
+GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL    = os.environ.get("GEMINI_SCOUT_MODEL", "gemini-2.5-flash-lite")
+
 # === LinkedIn enricher — search backend ===
 # Which search backend to use for the LinkedIn enricher.
 #   "ddg"    — DuckDuckGo (free, no key required, rate-limited)
 #   "serper" — Serper.dev (paid, requires SERPER_API_KEY, more reliable)
-# Overridable via env (SEARCH_BACKEND=serper) for scripted/non-interactive runs.
-# The interactive menu in main.py sets this at runtime when you pick option [2].
+#   "gemini" — Gemini API with Google Search grounding (uses GEMINI_API_KEY,
+#              same key as the bot/evaluator — no extra signup required)
+# Overridable via env (SEARCH_BACKEND=gemini) for scripted/non-interactive runs.
+# The interactive menu in main.py sets this at runtime.
 SEARCH_BACKEND = os.environ.get("SEARCH_BACKEND", "ddg").strip().lower()
 
 # Hard stop after this many searches per run. Override via env: MAX_LOOKUPS=1000
@@ -189,6 +195,28 @@ SERPER_SEARCH_BURST_SIZE = max(
 )
 SERPER_SEARCH_BURST_BREAK = max(
     0.0, float(os.environ.get("SERPER_SEARCH_BURST_BREAK", "0"))
+)
+
+# === Gemini enricher pacing (used when SEARCH_BACKEND=gemini) ===
+# Gemini API manages its own quota — we only need a light inter-request pause
+# to avoid saturating the batch. Much faster than DDG, no burst-break needed.
+GEMINI_SEARCH_INTERVAL = max(
+    0.0, float(os.environ.get("GEMINI_SEARCH_INTERVAL", "1.0"))
+)
+GEMINI_SEARCH_JITTER = min(
+    0.9, max(0.0, float(os.environ.get("GEMINI_SEARCH_JITTER", "0.1")))
+)
+GEMINI_SEARCH_COOLDOWN = max(
+    0.0, float(os.environ.get("GEMINI_SEARCH_COOLDOWN", "10.0"))
+)
+GEMINI_SEARCH_COOLDOWN_MAX = max(
+    10.0, float(os.environ.get("GEMINI_SEARCH_COOLDOWN_MAX", "60.0"))
+)
+GEMINI_SEARCH_COOLDOWN_AFTER = max(
+    1, int(os.environ.get("GEMINI_SEARCH_COOLDOWN_AFTER", "3"))
+)
+GEMINI_SEARCH_COOLDOWN_JITTER = min(
+    0.9, max(0.0, float(os.environ.get("GEMINI_SEARCH_COOLDOWN_JITTER", "0.1")))
 )
 
 # === IGB Live event profile URL ===

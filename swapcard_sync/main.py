@@ -393,7 +393,7 @@ def run() -> None:
 def _run_enricher_interactive() -> None:
     """Prompt for search backend and batch size, then run the LinkedIn enricher.
 
-    Step 1 — choose backend (DuckDuckGo free / Serper paid).
+    Step 1 — choose backend (DuckDuckGo free / Serper paid / Gemini API).
     Step 2 — optionally override the search cap (MAX_LOOKUPS).
     """
     # --- Step 1: backend selection ---
@@ -401,8 +401,14 @@ def _run_enricher_interactive() -> None:
     print("  Search backend:")
     print("  [1] DuckDuckGo  (free, no API key, may be rate-limited)")
     print("  [2] Serper      (paid, requires SERPER_API_KEY, more reliable)")
+    print("  [3] Gemini      (uses your existing GEMINI_API_KEY + Google Search grounding)")
     current_backend = config.SEARCH_BACKEND
-    current_label = "Serper" if current_backend == "serper" else "DuckDuckGo"
+    if current_backend == "serper":
+        current_label = "Serper"
+    elif current_backend == "gemini":
+        current_label = "Gemini"
+    else:
+        current_label = "DuckDuckGo"
     print(f"  Current: {current_label}  (set SEARCH_BACKEND env var to change default)")
     try:
         backend_choice = input("  Select backend [Enter = keep current]: ").strip()
@@ -416,6 +422,9 @@ def _run_enricher_interactive() -> None:
     elif backend_choice == "2":
         config.SEARCH_BACKEND = "serper"
         print("  Using Serper for this run.")
+    elif backend_choice == "3":
+        config.SEARCH_BACKEND = "gemini"
+        print("  Using Gemini (Google Search grounding) for this run.")
     elif backend_choice == "":
         print(f"  Keeping current backend: {current_label}.")
     else:
