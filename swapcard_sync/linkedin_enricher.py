@@ -454,26 +454,47 @@ def search_linkedin(name: str, company: str) -> tuple[str | None, int]:
     # Name-only last resort: still requires company corroboration in the result.
     attempts.append(f'"{name}" site:linkedin.com/in/')
 
+    dbg = config.DEBUG_ENRICHER
+
     queries_run = 0
     for index, query in enumerate(attempts):
         if index:
             _paced_sleep()  # pace DuckDuckGo between queries
         queries_run += 1
+        if dbg:
+            print(f"    [dbg] query: {query}")
         results = _search_text(query)
         if results is None:
+            if dbg:
+                print("    [dbg] → no results returned")
             continue  # genuine "no results" for this query — try the next one
+        if dbg:
+            print(f"    [dbg] → {len(results)} result(s)")
         for item in results:
-            link = item.get("href")
+            link = item.get("href", "")
+            title = item.get("title", "")
+            body = item.get("body", "")
+            if dbg:
+                print(f"    [dbg]   href : {link}")
+                print(f"    [dbg]   title: {title}")
+                print(f"    [dbg]   body : {body[:120]}")
             if not (link and "linkedin.com/in/" in link):
+                if dbg:
+                    print("    [dbg]   ✗ rejected: href has no linkedin.com/in/")
                 continue
-            title = item.get("title")
-            body = item.get("body")
             if not name_matches_profile(name, link, title):
+                if dbg:
+                    print(f"    [dbg]   ✗ rejected: name '{name}' not in slug/title")
                 continue
             # Always confirm the company surfaces in the actual profile, never
             # just because we searched for it — guards against same-name matches.
             if _company_corroborated(company, title, body):
+                if dbg:
+                    print(f"    [dbg]   ✓ accepted")
                 return link, queries_run
+            if dbg:
+                toks = _company_tokens(company) or _company_tokens(company, min_len=2)
+                print(f"    [dbg]   ✗ rejected: company not corroborated (tokens: {toks})")
     return None, queries_run
 
 

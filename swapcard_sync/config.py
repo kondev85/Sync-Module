@@ -124,6 +124,11 @@ GEMINI_MODEL    = os.environ.get("GEMINI_SCOUT_MODEL", "gemini-2.5-flash-lite")
 # The interactive menu in main.py sets this at runtime.
 SEARCH_BACKEND = os.environ.get("SEARCH_BACKEND", "ddg").strip().lower()
 
+# Set DEBUG_ENRICHER=1 to print every query, every result href/title, and the
+# exact guard (no-linkedin-url / name-mismatch / no-company-corroboration) that
+# rejected each candidate. Useful for diagnosing unexpected "no match" results.
+DEBUG_ENRICHER = os.environ.get("DEBUG_ENRICHER", "").strip() in ("1", "true", "yes")
+
 # Hard stop after this many searches per run. Override via env: MAX_LOOKUPS=1000
 # for bigger batches, or MAX_LOOKUPS=0 to remove the cap entirely.
 _max_lookups_raw = int(os.environ.get("MAX_LOOKUPS", "300"))
