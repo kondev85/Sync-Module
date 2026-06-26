@@ -700,7 +700,10 @@ def _gemini_search(query: str) -> list | None:
             )
             time.sleep(delay)
 
-    text = response.text.strip()  # type: ignore[union-attr]
+    raw_text = response.text if response is not None else None  # type: ignore[union-attr]
+    if not raw_text:
+        return None
+    text = raw_text.strip()
     # Strip markdown fences if the model added them despite instructions
     if text.startswith("```"):
         text = re.sub(r"^```[a-z]*\n?", "", text)

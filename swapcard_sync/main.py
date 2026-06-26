@@ -425,6 +425,17 @@ def _run_enricher_interactive() -> None:
     elif backend_choice == "3":
         config.SEARCH_BACKEND = "gemini"
         print("  Using Gemini (Google Search grounding) for this run.")
+        current_model = config.GEMINI_MODEL
+        print(f"  Current Gemini model: {current_model}")
+        print("  Common alternatives: gemini-2.0-flash, gemini-1.5-flash, gemini-2.5-pro")
+        try:
+            model_input = input("  Enter model name [Enter = keep current]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+        if model_input:
+            config.GEMINI_MODEL = model_input
+            print(f"  Gemini model set to: {model_input}")
     elif backend_choice == "":
         print(f"  Keeping current backend: {current_label}.")
     else:
