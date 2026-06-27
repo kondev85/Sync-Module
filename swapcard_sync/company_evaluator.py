@@ -342,8 +342,15 @@ def _write_website(page_id: str, domain: str, status: str) -> None:
     if domain:
         url_type = schema.get(PROP_WEBSITE_DOMAIN)
         if url_type == "url":
-            full_url = domain if domain.startswith("http") else f"https://{domain}"
+            clean = domain.rstrip("/").strip()
+            full_url = clean if clean.startswith("http") else f"https://{clean}"
             properties[PROP_WEBSITE_DOMAIN] = {"url": full_url}
+        else:
+            print(
+                f"  [website] WARNING: '{PROP_WEBSITE_DOMAIN}' column not found or wrong type "
+                f"(got {url_type!r}). URL '{domain}' will NOT be saved. "
+                f"Check the column name in Notion matches exactly: '{PROP_WEBSITE_DOMAIN}' (type URL)."
+            )
 
     web_eval_type = schema.get(PROP_WEBSITE_EVAL)
     if web_eval_type == "rich_text":
@@ -909,6 +916,11 @@ def run() -> None:
             missing_cols.append(
                 f"  '{col}' (type is {schema.get(col)!r} — needs to be a Text column)"
             )
+    if schema.get(PROP_WEBSITE_DOMAIN) != "url":
+        missing_cols.append(
+            f"  '{PROP_WEBSITE_DOMAIN}' (type is {schema.get(PROP_WEBSITE_DOMAIN)!r} "
+            f"— needs to be a URL column; website domains will be SKIPPED until fixed)"
+        )
     if missing_cols:
         print("WARNING — the following Notion columns are missing or wrong type:")
         for m in missing_cols:
