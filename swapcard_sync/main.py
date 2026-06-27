@@ -518,6 +518,46 @@ def _run_evaluator_interactive() -> None:
     company_evaluator.run()
 
 
+def _run_website_pass_interactive() -> None:
+    """Prompt for an optional batch cap, then run the website domain finder."""
+    print()
+    print("  Finds website domains for companies that are already AI-evaluated")
+    print("  but have an empty 'Website Evaluator' stamp.")
+    print()
+    current = company_evaluator.MAX_EVALUATIONS
+    if current == 0:
+        suggestion = "0 (unlimited — full list)"
+    else:
+        suggestion = str(current)
+
+    print(f"  Current cap (MAX_EVALUATIONS): {suggestion}")
+    print("  Enter a number to cap this run, or press Enter to keep current.")
+    print("  Type 0 or 'all' to process every qualifying row.")
+    try:
+        raw = input("  Batch size [Enter = keep current]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return
+
+    if raw in ("",):
+        pass
+    elif raw in ("0", "all", "none", "unlimited"):
+        company_evaluator.MAX_EVALUATIONS = 0
+        print("  No cap — will process the full list.")
+    else:
+        try:
+            val = int(raw)
+            if val < 0:
+                raise ValueError
+            company_evaluator.MAX_EVALUATIONS = val
+            print(f"  Batch size set to {val} for this run.")
+        except ValueError:
+            print(f"  Invalid input {raw!r} — keeping current cap ({suggestion}).")
+
+    print()
+    company_evaluator.run_website_pass()
+
+
 def main() -> None:
     """Present a simple CLI menu to pick which job to run.
 
@@ -533,6 +573,9 @@ def main() -> None:
     if config.RUN_MODE in ("3", "evaluator", "ai"):
         company_evaluator.run()
         return
+    if config.RUN_MODE in ("4", "website", "websitepass"):
+        company_evaluator.run_website_pass()
+        return
     if config.RUN_MODE in ("bot", "telegram"):
         import telegram_bot
         telegram_bot.run()
@@ -544,15 +587,16 @@ def main() -> None:
     print("  [1] Run iGB Live Event Scraper & Sync")
     print("  [2] Run Missing LinkedIn Profiles Finder & Enricher")
     print("  [3] Run AI Company Evaluator (BlocksRace lead qualifier)")
-    print("  [4] Run Conference Scout Telegram Bot")
+    print("  [4] Run Website Domain Finder (already-evaluated companies)")
+    print("  [5] Run Conference Scout Telegram Bot")
     print("-" * 60)
 
     try:
-        choice = input("Select an option [1/2/3/4]: ").strip()
+        choice = input("Select an option [1/2/3/4/5]: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nNo selection made. Exiting. "
               "(Tip: set RUN_MODE=scraper, RUN_MODE=enricher, RUN_MODE=evaluator, "
-              "or RUN_MODE=bot for non-interactive runs.)")
+              "RUN_MODE=website, or RUN_MODE=bot for non-interactive runs.)")
         return
 
     if choice == "1":
@@ -562,10 +606,12 @@ def main() -> None:
     elif choice == "3":
         _run_evaluator_interactive()
     elif choice == "4":
+        _run_website_pass_interactive()
+    elif choice == "5":
         import telegram_bot
         telegram_bot.run()
     else:
-        print(f"Unknown option {choice!r}. Please run again and choose 1, 2, 3, or 4.")
+        print(f"Unknown option {choice!r}. Please run again and choose 1–5.")
 
 
 if __name__ == "__main__":

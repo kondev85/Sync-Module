@@ -43,6 +43,9 @@ PROP_AI_SCORE     = "AI Score"        # Text  (stored as "4/5" so it's human-rea
 PROP_AI_RATIONALE = "AI Rationale"    # Text
 PROP_AI_CONTEXT   = "AI Web Context"  # Text — raw search snippet saved before Gemini call
 
+PROP_WEBSITE_DOMAIN = "Website Domain"    # URL — official company website (e.g. https://kitsunestudios.co)
+PROP_WEBSITE_EVAL   = "Website Evaluator" # Text — gate col; blank=pending, Done=written, Skipped=not found
+
 # ── AI Evaluation status values ───────────────────────────────────────────────
 # blank   → not yet processed (picked up on every run)
 # "Done"  → successfully evaluated by Gemini
@@ -51,6 +54,13 @@ PROP_AI_CONTEXT   = "AI Web Context"  # Text — raw search snippet saved before
 EVAL_STATUS_DONE    = "Done"
 EVAL_STATUS_SKIPPED = "Skipped"
 EVAL_STATUS_ERROR   = "Error"
+
+# ── Website Evaluator status values ──────────────────────────────────────────
+# blank     → not yet attempted
+# "Done"    → domain written to Website Domain column
+# "Skipped" → Gemini couldn't identify a confident match; Website Domain left empty
+WEBSITE_STATUS_DONE    = "Done"
+WEBSITE_STATUS_SKIPPED = "Skipped"
 
 # ── Run settings ──────────────────────────────────────────────────────────────
 MAX_EVALUATIONS = max(0, int(os.environ.get("MAX_EVALUATIONS", "0")))  # 0 = unlimited
@@ -96,11 +106,21 @@ the company, produce two things:
 
 3. rationale — one concise sentence explaining the score.
 
+4. website_domain — the company's official website domain.
+   Inspect the Candidate URLs listed in the web context. Pick the one that is most
+   likely the company's own homepage — exclude LinkedIn, Wikipedia, Crunchbase,
+   Bloomberg, news sites, job boards, and directories.
+   Return ONLY the bare domain (e.g. "kitsunestudios.co" or "www.example.com") —
+   no https://, no trailing slash, no path.
+   If none of the candidate URLs are clearly the official company site, return "".
+   Do NOT invent a domain that is not in the provided candidate list.
+
 Reply with ONLY a valid JSON object and nothing else — no markdown, no commentary:
 {
   "company_type": "<5-8 word description of what the company does>",
   "score": <integer 1-5>,
-  "rationale": "<one concise sentence explaining the score>"
+  "rationale": "<one concise sentence explaining the score>",
+  "website_domain": "<bare domain or empty string>"
 }"""
 
 
@@ -179,6 +199,74 @@ def _build_filter() -> dict:
     return needs_processing
 
 
+def fetch_needs_website() -> list[dict]:
+    """Return rows where AI Evaluation=Done but Website Evaluator is blank.
+
+    These are companies already scored by Gemini but not yet given a website —
+    either they were processed before this feature existed, or the website pass
+    failed previously. Rows stamped Done or Skipped in Website Evaluator are
+    excluded so they are never retried automatically.
+    """
+    schema = notion_sync.get_schema()
+
+    eval_type = schema.get(PROP_AI_EVAL)
+    if eval_type == "rich_text":
+        ai_done = {"property": PROP_AI_EVAL, "rich_text": {"equals": EVAL_STATUS_DONE}}
+    elif eval_type == "title":
+        ai_done = {"property": PROP_AI_EVAL, "title": {"equals": EVAL_STATUS_DONE}}
+    else:
+        raise RuntimeError(
+            f"'{PROP_AI_EVAL}' column not found or wrong type. "
+            "Run the AI Evaluator first so rows have 'Done' stamps."
+        )
+
+    web_eval_type = schema.get(PROP_WEBSITE_EVAL)
+    if web_eval_type == "rich_text":
+        web_empty = {"property": PROP_WEBSITE_EVAL, "rich_text": {"is_empty": True}}
+    elif web_eval_type == "title":
+        web_empty = {"property": PROP_WEBSITE_EVAL, "title": {"is_empty": True}}
+    else:
+        raise RuntimeError(
+            f"'{PROP_WEBSITE_EVAL}' column not found (type={web_eval_type!r}). "
+            "Create a Text column named 'Website Evaluator' in your Notion database."
+        )
+
+    company_type_str = schema.get(config.PROP_COMPANY)
+    filters = [ai_done, web_empty]
+    if company_type_str in ("rich_text", "title"):
+        filters.append({
+            "property": config.PROP_COMPANY,
+            company_type_str: {"is_not_empty": True},
+        })
+
+    url = f"{config.NOTION_API_URL}/databases/{config.NOTION_DATABASE_ID}/query"
+    body_base = {"filter": {"and": filters}, "page_size": 100}
+    contacts: list[dict] = []
+    cursor: str | None = None
+    while True:
+        body = dict(body_base)
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = notion_sync._notion_request("POST", url, body)
+        resp.raise_for_status()
+        data = resp.json()
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            contacts.append({
+                "page_id":        page["id"],
+                "name":           _plain_text(props.get(config.PROP_NAME)),
+                "company":        _plain_text(props.get(config.PROP_COMPANY)),
+                "role":           _plain_text(props.get(config.PROP_ROLE)),
+                "cached_snippet": _rich_text_value(props.get(PROP_AI_CONTEXT)),
+            })
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+        if not cursor:
+            break
+    return contacts
+
+
 def fetch_unevaluated() -> list[dict]:
     """Page through the DB and return all rows that need evaluation.
 
@@ -241,6 +329,37 @@ def _write_snippet(page_id: str, snippet: str) -> None:
     _patch_page(page_id, {PROP_AI_CONTEXT: prop_value})
 
 
+def _write_website(page_id: str, domain: str, status: str) -> None:
+    """Write the website domain (URL column) and Website Evaluator stamp.
+
+    `domain` should be a bare domain like "kitsunestudios.co" or "" when
+    Gemini couldn't identify a confident match. The stamp is always written
+    so the row is not picked up again on the next run.
+    """
+    schema = notion_sync.get_schema()
+    properties: dict = {}
+
+    if domain:
+        url_type = schema.get(PROP_WEBSITE_DOMAIN)
+        if url_type == "url":
+            full_url = domain if domain.startswith("http") else f"https://{domain}"
+            properties[PROP_WEBSITE_DOMAIN] = {"url": full_url}
+
+    web_eval_type = schema.get(PROP_WEBSITE_EVAL)
+    if web_eval_type == "rich_text":
+        properties[PROP_WEBSITE_EVAL] = _rt(status)
+    elif web_eval_type == "title":
+        properties[PROP_WEBSITE_EVAL] = _title_rt(status)
+    else:
+        print(
+            f"  [website] WARNING: '{PROP_WEBSITE_EVAL}' column not found "
+            f"(type={web_eval_type!r}). Create a Text column with that exact name."
+        )
+
+    if properties:
+        _patch_page(page_id, properties)
+
+
 def _write_result(
     page_id: str,
     company_type: str,
@@ -297,8 +416,8 @@ def _results_to_snippet(results: list) -> str:
     """Flatten a list of search result dicts into a single ≤800-char snippet."""
     parts = []
     for r in results[:3]:
-        title = r.get("title", "") or r.get("title", "")
-        body  = r.get("body",  "") or r.get("snippet", "")
+        title = r.get("title", "")
+        body  = r.get("body", "") or r.get("snippet", "")
         if title:
             parts.append(title)
         if body:
@@ -306,25 +425,36 @@ def _results_to_snippet(results: list) -> str:
     return " | ".join(parts)[:800]
 
 
-def _ddg_snippet(query: str) -> str | None:
-    """Try one DuckDuckGo query; return snippet string or None on failure."""
+def _results_to_urls(results: list) -> list[str]:
+    """Extract candidate page URLs from search results (up to 5).
+
+    These are passed to Gemini so it can identify the company's official homepage
+    rather than inferring it from snippet text alone.
+    """
+    urls = []
+    for r in results[:5]:
+        href = r.get("href") or r.get("link") or r.get("url") or ""
+        if href and href.startswith("http"):
+            urls.append(href)
+    return urls
+
+
+def _ddg_search(query: str) -> list[dict]:
+    """Try one DuckDuckGo query; return raw result list (empty on failure)."""
     try:
         with DDGS(timeout=20) as ddgs:
-            results = ddgs.text(query, max_results=5) or []
-        if results:
-            return _results_to_snippet(results)
+            return ddgs.text(query, max_results=5) or []
     except (RatelimitException, TimeoutException, DDGSException, Exception):
-        pass
-    return None
+        return []
 
 
-def _serper_snippet(query: str) -> str | None:
-    """Try one Serper.dev query; return snippet string or None on failure.
+def _serper_search(query: str) -> list[dict]:
+    """Try one Serper.dev query; return normalised result list (empty on failure).
 
-    Only attempted when SERPER_API_KEY is set — silently skipped otherwise.
+    Only attempted when SERPER_API_KEY is set — returns [] otherwise.
     """
     if not config.SERPER_API_KEY:
-        return None
+        return []
     try:
         resp = requests.post(
             "https://google.serper.dev/search",
@@ -334,16 +464,16 @@ def _serper_snippet(query: str) -> str | None:
         )
         resp.raise_for_status()
         organic = resp.json().get("organic") or []
-        if organic:
-            # Normalise to the same shape as DDG results
-            normalised = [
-                {"title": r.get("title", ""), "body": r.get("snippet", "")}
-                for r in organic
-            ]
-            return _results_to_snippet(normalised)
+        return [
+            {
+                "title": r.get("title", ""),
+                "body": r.get("snippet", ""),
+                "href": r.get("link", ""),
+            }
+            for r in organic
+        ]
     except Exception:
-        pass
-    return None
+        return []
 
 
 def _snippet_mentions_company(snippet: str, company: str) -> bool:
@@ -367,8 +497,8 @@ def _snippet_mentions_company(snippet: str, company: str) -> bool:
     return any(tok in snippet_lower for tok in tokens)
 
 
-def _search_snippet(company: str) -> str:
-    """Return a short business-context snippet for a company name.
+def _search_company(company: str) -> tuple[str, list[str]]:
+    """Return (snippet, candidate_urls) for a company name.
 
     Strategy (most to least reliable):
       1. DuckDuckGo — iGaming-flavoured query (best signal for our use-case)
@@ -377,38 +507,40 @@ def _search_snippet(company: str) -> str:
       4. Serper.dev — plain name-only (if SERPER_API_KEY is set)
 
     Each snippet is validated: if the company name doesn't appear in the
-    result, the snippet is discarded (DuckDuckGo often returns a well-known
-    iGaming brand like GLI for unrelated company searches because GLI tests
-    and certifies many companies and shows up in iGaming-adjacent results).
+    result, the snippet is discarded. candidate_urls are the raw hrefs from
+    the winning result set — passed to Gemini for website domain identification.
 
-    Returns an empty string if every attempt fails — Gemini still runs
-    but with less context and will default to a lower confidence score.
+    Returns ("", []) if every attempt fails.
     """
     igaming_query = f'"{company}" casino OR sportsbook OR betting OR iGaming'
     plain_query   = f'"{company}"'
 
     # ── DuckDuckGo first (free) ──────────────────────────────────────────────
     for query in (igaming_query, plain_query):
-        snippet = _ddg_snippet(query)
-        if snippet:
-            if _snippet_mentions_company(snippet, company):
-                return snippet
-            print(f"  [search] Snippet discarded — doesn't mention '{company}'. Trying next query.")
+        results = _ddg_search(query)
+        if results:
+            snippet = _results_to_snippet(results)
+            if snippet and _snippet_mentions_company(snippet, company):
+                return snippet, _results_to_urls(results)
+            if snippet:
+                print(f"  [search] Snippet discarded — doesn't mention '{company}'. Trying next query.")
         time.sleep(1)   # brief pause between DDG attempts
 
     # ── Serper fallback (paid, if key is set) ────────────────────────────────
     if config.SERPER_API_KEY:
         for query in (igaming_query, plain_query):
-            snippet = _serper_snippet(query)
-            if snippet:
-                if _snippet_mentions_company(snippet, company):
+            results = _serper_search(query)
+            if results:
+                snippet = _results_to_snippet(results)
+                if snippet and _snippet_mentions_company(snippet, company):
                     print("  [search] DDG failed — used Serper fallback.")
-                    return snippet
-                print(f"  [search] Serper snippet discarded — doesn't mention '{company}'.")
+                    return snippet, _results_to_urls(results)
+                if snippet:
+                    print(f"  [search] Serper snippet discarded — doesn't mention '{company}'.")
             time.sleep(0.5)
 
     print(f"  [search] No valid snippet found for '{company}' — Gemini will assess by name only.")
-    return ""
+    return "", []
 
 
 # ── Gemini AI assessment ──────────────────────────────────────────────────────
@@ -498,16 +630,27 @@ def _call_gemini(client: genai.Client, user_message: str) -> str:
     raise RuntimeError("Gemini retry limit exceeded")  # unreachable but makes mypy happy
 
 
-def assess_company(client: genai.Client, company: str, role: str, snippet: str) -> dict:
+def assess_company(
+    client: genai.Client,
+    company: str,
+    role: str,
+    snippet: str,
+    candidate_urls: list[str] | None = None,
+) -> dict:
     """Send company info to Gemini and parse the JSON response.
 
-    Returns a dict with keys: company_type, score, rationale.
+    Returns a dict with keys: company_type, score, rationale, website_domain.
     Raises on unrecoverable errors (caller decides whether to stamp Skipped).
     """
+    url_line = ""
+    if candidate_urls:
+        url_line = "\nCandidate URLs: " + ", ".join(candidate_urls[:5])
+
     user_message = (
         f"Company: {company or '(unknown)'}\n"
         f"Contact role: {role or '(unknown)'}\n"
         f"Web context: {snippet or '(no search results found)'}"
+        f"{url_line}"
     )
     raw = _call_gemini(client, user_message)
 
@@ -520,9 +663,10 @@ def assess_company(client: genai.Client, company: str, role: str, snippet: str) 
     except json.JSONDecodeError as exc:
         raise ValueError(f"Gemini returned non-JSON: {raw[:300]}") from exc
 
-    company_type = str(result.get("company_type", "")).strip()
-    score_raw    = result.get("score", 1)
-    rationale    = str(result.get("rationale", "")).strip()
+    company_type   = str(result.get("company_type", "")).strip()
+    score_raw      = result.get("score", 1)
+    rationale      = str(result.get("rationale", "")).strip()
+    website_domain = str(result.get("website_domain", "")).strip()
 
     if not company_type:
         company_type = "unknown business type"
@@ -535,7 +679,84 @@ def assess_company(client: genai.Client, company: str, role: str, snippet: str) 
     if not rationale:
         rationale = "No rationale provided."
 
-    return {"company_type": company_type, "score": score, "rationale": rationale}
+    return {
+        "company_type": company_type,
+        "score": score,
+        "rationale": rationale,
+        "website_domain": website_domain,
+    }
+
+
+# ── Website-only Gemini assessment (for the standalone website pass) ──────────
+
+_WEBSITE_SYSTEM_PROMPT = """You are identifying a company's official website.
+
+Given a company name and a list of candidate URLs found in web search results,
+return the URL that is most likely the company's official homepage.
+
+Exclude: LinkedIn, Wikipedia, Crunchbase, Bloomberg, news articles, job boards,
+app stores, industry directories, and any URL that is clearly not the company's
+own website.
+
+Return ONLY a valid JSON object — no markdown, no commentary:
+{
+  "website_domain": "<bare domain e.g. kitsunestudios.co or www.example.com>"
+}
+
+If none of the candidate URLs are clearly the official company website, return:
+{
+  "website_domain": ""
+}
+
+Do NOT invent or guess a domain that is not in the provided list."""
+
+
+def find_website_domain(
+    client: genai.Client,
+    company: str,
+    snippet: str,
+    candidate_urls: list[str],
+) -> str:
+    """Ask Gemini (website-only prompt) to pick the best domain from candidate URLs.
+
+    Returns a bare domain string (e.g. "kitsunestudios.co") or "" if Gemini
+    cannot identify a confident match. Uses a minimal prompt — no company
+    type/score/rationale — to keep cost low for the standalone website pass.
+    """
+    if not candidate_urls:
+        return ""
+
+    user_message = (
+        f"Company: {company or '(unknown)'}\n"
+        f"Web context: {snippet or '(no search results found)'}\n"
+        f"Candidate URLs: {', '.join(candidate_urls[:5])}"
+    )
+
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user_message,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=_WEBSITE_SYSTEM_PROMPT,
+                    temperature=0.1,
+                    max_output_tokens=128,
+                    response_mime_type="application/json",
+                ),
+            )
+            raw = (response.text or "").strip()
+            raw = re.sub(r"^```[a-z]*\n?", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\n?```$", "", raw)
+            result = json.loads(raw)
+            return str(result.get("website_domain", "")).strip()
+        except Exception as exc:
+            if not _is_gemini_rate_limit(exc) or attempt >= GEMINI_MAX_RETRIES:
+                print(f"  [website] Gemini error: {exc}")
+                return ""
+            delay = (_parse_retry_delay(exc) or 30.0 * (attempt + 1)) + random.uniform(1, 5)
+            print(f"  [website] 429 rate limit — waiting {delay:.0f}s (attempt {attempt + 1})…")
+            time.sleep(delay)
+    return ""
 
 
 # ── Company-level deduplication (fuzzy name matching) ────────────────────────
@@ -756,19 +977,25 @@ def run() -> None:
 
         print(label)
 
-        # ── Web search snippet (DDG → Serper fallback) ─────────────────────
+        # ── Web search snippet + candidate URLs (DDG → Serper fallback) ────
         # Use the cached snippet from Notion if it actually mentions this company.
         # Validate even cached snippets — earlier runs may have saved contaminated
         # results (e.g. GLI content returned for unrelated company searches).
+        # Note: cached snippets don't contain URLs, so we always re-search for
+        # candidate_urls when the snippet is fresh; for cached hits we pass [] and
+        # Gemini does its best from the company name alone.
         cached = group[0].get("cached_snippet", "")
+        candidate_urls: list[str] = []
         if cached and _snippet_mentions_company(cached, company):
             snippet = cached
             print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''} [cached]")
         else:
             if cached:
                 print(f"  Snippet : cached snippet invalid for '{company}' — fetching fresh.")
-            snippet = _search_snippet(company)
+            snippet, candidate_urls = _search_company(company)
             print(f"  Snippet : {snippet[:80]}{'…' if len(snippet) > 80 else ''}")
+            if candidate_urls:
+                print(f"  URLs    : {', '.join(candidate_urls[:3])}")
             # ── Save snippet to ALL contacts in this group BEFORE calling Gemini ──
             # This ensures the context is in Notion even if Gemini fails below.
             for contact in group:
@@ -779,7 +1006,7 @@ def run() -> None:
 
         # ── Gemini assessment ───────────────────────────────────────────────
         try:
-            result = assess_company(client, company, role, snippet)
+            result = assess_company(client, company, role, snippet, candidate_urls)
         except Exception as exc:
             print(f"  [ERROR] Gemini failed: {exc}")
             errors += len(group)
@@ -802,16 +1029,26 @@ def run() -> None:
             _pace(company_num, len(groups))
             continue
 
-        company_type = result["company_type"]
-        score        = result["score"]
-        rat          = result["rationale"]
-        print(f"  → {company_type}  |  Score {score}/5  |  {rat}")
+        company_type    = result["company_type"]
+        score           = result["score"]
+        rat             = result["rationale"]
+        website_domain  = result.get("website_domain", "")
+        if website_domain:
+            print(f"  → {company_type}  |  Score {score}/5  |  {rat}  |  🌐 {website_domain}")
+        else:
+            print(f"  → {company_type}  |  Score {score}/5  |  {rat}  |  (no website found)")
 
         # ── Write to all contacts in this group ─────────────────────────────
         first = True
         for contact in group:
             try:
                 _write_result(contact["page_id"], company_type, score, rat, EVAL_STATUS_DONE)
+                # Write website domain + evaluator stamp for every contact in group
+                try:
+                    web_status = WEBSITE_STATUS_DONE if website_domain else WEBSITE_STATUS_SKIPPED
+                    _write_website(contact["page_id"], website_domain, web_status)
+                except Exception as web_exc:
+                    print(f"  [website] Write failed for {contact['name']!r}: {web_exc}")
                 done += 1
                 if not first:
                     stamped_from_cache += 1
@@ -843,6 +1080,130 @@ def _pace(index: int, total: int) -> None:
     if index < total and EVAL_INTERVAL > 0:
         jitter = random.uniform(-0.3, 0.3) * EVAL_INTERVAL
         time.sleep(max(0.0, EVAL_INTERVAL + jitter))
+
+
+def run_website_pass() -> None:
+    """Standalone pass: find website domains for already-evaluated companies.
+
+    Picks up rows where AI Evaluation=Done but Website Evaluator is blank.
+    For each unique company: re-searches DDG for candidate URLs, then calls
+    Gemini (website-only prompt) to pick the official homepage.
+
+    Stamps every contact in the company group with Done or Skipped in
+    Website Evaluator so they are never retried automatically.
+    """
+    validate()
+    notion_sync.get_schema()
+
+    print("\n=== Website Domain Finder (already-evaluated companies) ===")
+    print(f"Model : {GEMINI_MODEL}")
+    print(f"Pacing: {EVAL_INTERVAL}s between company lookups")
+    if MAX_EVALUATIONS:
+        print(f"Cap   : {MAX_EVALUATIONS} rows this run")
+    print()
+
+    schema = notion_sync.get_schema()
+    web_eval_type = schema.get(PROP_WEBSITE_EVAL)
+    if web_eval_type not in ("rich_text", "title"):
+        print(
+            f"ERROR: '{PROP_WEBSITE_EVAL}' column not found or wrong type "
+            f"(got {web_eval_type!r}).\n"
+            "Create a Text column named 'Website Evaluator' in your Notion database."
+        )
+        return
+
+    print("Fetching rows that need a website lookup…")
+    try:
+        contacts = fetch_needs_website()
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        return
+
+    total_rows = len(contacts)
+    print(f"Found {total_rows} rows needing website lookup.")
+
+    if not contacts:
+        print("Nothing to do — all evaluated rows already have a Website Evaluator stamp.")
+        return
+
+    groups = _group_by_company(contacts)
+    total_companies = len(groups)
+    print(f"Unique companies: {total_companies}\n")
+
+    if MAX_EVALUATIONS:
+        all_ordered = [c for group in groups.values() for c in group]
+        capped = all_ordered[:MAX_EVALUATIONS]
+        groups = _group_by_company(capped)
+        print(f"Capped to first {len(capped)} rows ({len(groups)} companies).\n")
+
+    client = _gemini_client()
+    done = skipped = errors = 0
+    company_num = 0
+
+    for key, group in groups.items():
+        company_num += 1
+        company = group[0]["company"] or ""
+
+        if not company:
+            for contact in group:
+                try:
+                    _write_website(contact["page_id"], "", WEBSITE_STATUS_SKIPPED)
+                except Exception:
+                    pass
+            skipped += len(group)
+            continue
+
+        n_contacts = len(group)
+        label = f"[{company_num}/{len(groups)}] {company}"
+        if n_contacts > 1:
+            label += f"  ({n_contacts} contacts)"
+        print(label)
+
+        # Search for candidate URLs — reuse cached snippet if valid, re-search if not
+        cached = group[0].get("cached_snippet", "")
+        if cached and _snippet_mentions_company(cached, company):
+            snippet = cached
+            print(f"  Snippet : [cached]  Searching URLs fresh…")
+            # Cached snippet = text only, no URLs stored; do a quick plain search
+            results = _ddg_search(f'"{company}"') or []
+            if not results and config.SERPER_API_KEY:
+                results = _serper_search(f'"{company}"') or []
+            candidate_urls = _results_to_urls(results)
+        else:
+            snippet, candidate_urls = _search_company(company)
+
+        if candidate_urls:
+            print(f"  URLs    : {', '.join(candidate_urls[:3])}")
+        else:
+            print(f"  URLs    : none found — will stamp Skipped")
+
+        # Call Gemini website-only prompt
+        domain = find_website_domain(client, company, snippet, candidate_urls)
+
+        if domain:
+            print(f"  → 🌐 {domain}")
+            web_status = WEBSITE_STATUS_DONE
+        else:
+            print(f"  → Skipped (no confident match)")
+            web_status = WEBSITE_STATUS_SKIPPED
+
+        for contact in group:
+            try:
+                _write_website(contact["page_id"], domain, web_status)
+                if domain:
+                    done += 1
+                else:
+                    skipped += 1
+            except Exception as exc:
+                print(f"  [ERROR] Notion write failed for {contact['name']!r}: {exc}")
+                errors += 1
+
+        _pace(company_num, len(groups))
+
+    print(
+        f"\n✓ Finished.  "
+        f"Domains written: {done}  Skipped: {skipped}  Errors: {errors}"
+    )
 
 
 def reset_gemini_errors() -> None:
