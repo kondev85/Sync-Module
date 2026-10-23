@@ -93,6 +93,7 @@ class DedupTests(unittest.TestCase):
     def make_importer(self, pages):
         obj = notion_import.NotionImporter.__new__(notion_import.NotionImporter)
         obj.schema = SCHEMA
+        obj.source_tags_added = 0
         obj.pages = {p["id"]: p for p in pages}
         obj._index()
         return obj
@@ -131,7 +132,8 @@ class DedupTests(unittest.TestCase):
         properties = request.call_args_list[1].args[2]["properties"]
         for key in ("Name", "Company", "Notes", "Role", "Status"):
             self.assertNotIn(key, properties)
-        self.assertTrue(properties["SiGMAWorld"]["checkbox"])
+        self.assertEqual(properties["Source1"]["multi_select"], [{"name": "SiGMA2026"}])
+        self.assertNotIn("SiGMAWorld", properties)
         self.assertEqual(properties["SIGMA URL"]["url"], URL)
 
     @patch.object(notion_import.time, "sleep")

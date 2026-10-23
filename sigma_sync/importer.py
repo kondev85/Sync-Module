@@ -11,7 +11,8 @@ from .profiles import build_contact, text
 from .pipeline import PipelineCheck
 
 
-def print_summary(rows, filtered, offset_skipped, pipeline_counts=None, pipeline_enabled=False):
+def print_summary(rows, filtered, offset_skipped, pipeline_counts=None, pipeline_enabled=False,
+                  source_tags_added=0):
     print("\nSiGMA import results")
     print(f"{'#':<5} {'Name':<30} {'Result':<17} Details")
     print("-" * 100)
@@ -22,6 +23,7 @@ def print_summary(rows, filtered, offset_skipped, pipeline_counts=None, pipeline
     for status in ("created", "updated", "skipped", "check-duplicate", "error"):
         print(f"{status:<19}{counts[status]}")
     print(f"Filtered out: {filtered}; skipped by offset: {offset_skipped}")
+    print(f"Source1 tags added: {source_tags_added}")
     print(f"Pipeline check: {'on' if pipeline_enabled else 'off'}")
     for status in ("pipeline tagged", "pipeline already tagged", "pipeline ambiguous"):
         print(f"{status:<26}{(pipeline_counts or {}).get(status, 0)}")
@@ -45,6 +47,7 @@ def run():
         "0", "false", "no", "off",
     )
     pipeline = None
+    notion = None
     try:
         # Validate source auth before spending time or writes on Notion.
         page = skip // 20 + 1
@@ -117,4 +120,5 @@ def run():
         print_summary(
             rows, filtered, skip - skip % 20 + offset_skipped,
             pipeline.counts if pipeline is not None else None, pipeline_enabled,
+            notion.source_tags_added if notion is not None else 0,
         )

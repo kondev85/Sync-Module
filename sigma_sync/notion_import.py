@@ -17,11 +17,11 @@ FIELDS = {
     "Website Domain": ("website", ("url",)),
     "Email": ("email", ("email", "rich_text")),
     "SIGMA URL": ("sigma_url", ("url",)),
-    "SiGMAWorld": ("sigma", ("checkbox",)),
+    config.PROP_SOURCE: ("source", ("multi_select",)),
     "Business Type": ("business_type", ("multi_select",)),
     "Status": ("status", ("select", "status", "multi_select", "rich_text")),
 }
-OVERWRITE = {"SIGMA URL", "SiGMA URL", "SiGMAWorld", "Business Type"}
+OVERWRITE = {"SIGMA URL", "SiGMA URL", "Business Type"}
 SUFFIXES = {"ltd", "limited", "plc", "inc", "llc", "group", "gmbh", "sa", "srl", "bv", "co"}
 
 
@@ -76,6 +76,9 @@ def property_name(name: str, schema: dict) -> str:
 def build_properties(contact: dict, schema: dict, existing: dict | None = None) -> dict:
     result = {}
     for name, (key, allowed) in FIELDS.items():
+        if name == config.PROP_SOURCE:
+            result.update(notion_sync.source_tag_properties(schema, "SiGMA2026", existing))
+            continue
         name = property_name(name, schema)
         kind = schema.get(name)
         if kind not in allowed:
@@ -87,8 +90,8 @@ def build_properties(contact: dict, schema: dict, existing: dict | None = None) 
             continue
         if existing is not None and name == "Status":
             continue  # New/Check duplicate are creation statuses, not updates.
-        incoming = True if key == "sigma" else contact.get(key)
-        if not incoming and key != "sigma":
+        incoming = contact.get(key)
+        if not incoming:
             continue
         if kind in ("rich_text", "title"):
             result[name] = {kind: rich_text(str(incoming))}
@@ -111,12 +114,13 @@ class NotionImporter:
             name = property_name(name, self.schema)
             actual = self.schema.get(name)
             if actual not in allowed:
-                print(f"  [notion] {name!r}: {actual or 'missing'}; skipped (expected {'/'.join(allowed)}).")
+                print(f"  [notion] WARNING: {name!r}: {actual or 'missing'}; skipped (expected {'/'.join(allowed)}).")
         self.pages = {}
         self.by_sigma = {}
         self.by_linkedin = {}
         self.by_name = {}
         self.last_page_id = None
+        self.source_tags_added = 0
         self._load()
 
     def _index(self):
@@ -196,10 +200,11 @@ class NotionImporter:
                 contact["notes"] = (contact.get("notes", "") + "\n\n" + note).strip()
                 contact["status"] = "Check duplicate"
                 status = "check-duplicate"
+            properties = build_properties(contact, self.schema)
             response = notion_sync._notion_request(
                 "POST", f"{config.NOTION_API_URL}/pages",
                 {"parent": {"database_id": config.NOTION_DATABASE_ID},
-                 "properties": build_properties(contact, self.schema)}, idempotent=False
+                 "properties": properties}, idempotent=False
             )
         # Never retry ambiguous creation failures: the shared helper deliberately
         # avoids retrying non-idempotent POSTs on 5xx.
@@ -208,6 +213,8 @@ class NotionImporter:
         finally:
             time.sleep(config.ROW_INSERT_INTERVAL)
         page = response.json()
+        if config.PROP_SOURCE in properties:
+            self.source_tags_added += 1
         self.last_page_id = page["id"]
         self.pages[page["id"]] = page
         self._index()

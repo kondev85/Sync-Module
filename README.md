@@ -82,7 +82,7 @@ Your Notion database must have the following columns. Column names are **case-se
 | `Role` | Text | Recommended | Job title |
 | `LinkedIn` | URL | Recommended | LinkedIn profile URL |
 | `Notes` | Text | Optional | Biography / notes |
-| `iGBLive` | Checkbox | Optional | Checked for every synced attendee |
+| `Source1` | Multi-select | Optional | Adds `IGB2026` for Swapcard/iGB; retains existing tags |
 | `IGB URL` | URL | Optional | Direct link to the attendee's Swapcard profile page |
 | `LinkedIn Enreacher` | Multi-select | Optional | Enricher stamp: `Yes`, `Skipped` (note: intentional spelling to match existing column) |
 | `AI Evaluation` | Text | Required for evaluator | Gate column: blank = pending, `Done`, `Error`, `Skipped` |
@@ -350,7 +350,7 @@ to `SIGMA URL` and checks both for previously imported source URLs.
 | `Email` | Email or Text | Email only when it appears in the biography; never taken from account/session fields |
 | `Notes` | Text | Biography (including booth/Telegram mentions), explicit booth/Telegram fields, What I Provide, I'm Looking For, provide/looking-for product/service categories, continents, languages |
 | `SIGMA URL` | **URL** | `https://match.sigma.world/attendees/{uuid}`; strongly recommended for safe repeat imports |
-| `SiGMAWorld` | **Checkbox** | Checked |
+| `Source1` | **Multi-select** | Adds `SiGMA2026`, retaining all existing tags |
 | `Business Type` | **Multi-select** | Business types from the list |
 | `Status` | Multi-select, Select, Status, or Text | New rows: `New`; ambiguous duplicate candidates: `Check duplicate` |
 
@@ -380,10 +380,28 @@ then checks in this order:
 
 Updates fetch the current row again and **only fill empty mapped fields**.
 Existing names, full surnames, emails, notes, roles, websites, LinkedIn URLs,
-and statuses are preserved. The only overwrite exceptions are `SiGMAWorld`,
-`SIGMA URL`, and `Business Type`. The importer does not tick `iGBLive`, replace
+and statuses are preserved. The only overwrite exceptions are
+`SIGMA URL` and `Business Type`. The importer does not tick `iGBLive`, replace
 `IGB URL`, or touch AI/enricher stamps. Updated and created rows are indexed
 immediately for subsequent duplicate checks in the same run.
+
+### Lead Pool source attribution (both importers)
+
+`PROP_SOURCE = "Source1"` in `swapcard_sync/config.py` names the shared
+**Multi-select** column. Swapcard adds `IGB2026`; SiGMA adds `SiGMA2026` on
+created and updated rows. Updates read the latest row, retain all existing
+options, and omit `Source1` from the write when the tag is already present.
+If the column is missing or has another type, a warning is printed and the
+source field is skipped without failing the import. Previously imported rows
+that are skipped by the existing source-URL checks remain skipped; this is not
+a historical backfill.
+
+Neither importer writes `iGBLive` or `SiGMAWorld` anymore. No Notion columns
+are created, deleted, or retyped; you may remove the old checkboxes manually.
+The SiGMA summary includes **Source1 tags added**, counting successful writes
+that added the missing tag (including new rows). This does not include
+Pipeline tags: Pipeline Contacts continues using its separate `Source`
+column and its existing matching and write rules, unchanged.
 
 If a write fails, the import stops and prints its partial results; it does not
 blindly retry a possibly successful creation. Review Notion before restarting

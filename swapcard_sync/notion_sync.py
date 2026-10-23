@@ -92,7 +92,7 @@ EXPECTED_TYPES = {
     config.PROP_ROLE: "rich_text",
     config.PROP_NOTES: "rich_text",
     config.PROP_LINKEDIN: "url",
-    config.PROP_IGBLIVE: "checkbox",
+    config.PROP_SOURCE: "multi_select",
     config.PROP_IGB_URL: "url",
 }
 
@@ -138,18 +138,32 @@ def report_schema_mismatches() -> None:
         actual = schema.get(prop)
         if actual is None:
             print(
-                f"  [notion] NOTE: property {prop!r} not found in the database — "
+                f"  [notion] WARNING: property {prop!r} not found in the database — "
                 f"those values will be skipped. Add a {expected} property named "
                 f"{prop!r} if you want them synced."
             )
         elif actual != expected:
             print(
-                f"  [notion] NOTE: property {prop!r} is type {actual!r} but this "
+                f"  [notion] WARNING: property {prop!r} is type {actual!r} but this "
                 f"script writes {expected!r} — it will be skipped to avoid errors."
             )
 
 
-def build_properties(contact: dict) -> dict:
+def source_tag_properties(schema: dict, tag: str, existing: dict | None = None) -> dict:
+    """Add only a missing source tag, retaining existing options by ID or name."""
+    if schema.get(config.PROP_SOURCE) != "multi_select":
+        return {}
+    options = (existing or {}).get("properties", {}).get(config.PROP_SOURCE, {}).get("multi_select", [])
+    if any(option.get("name") == tag for option in options):
+        return {}
+    preserved = [
+        {"id": option["id"]} if option.get("id") else {"name": option["name"]}
+        for option in options
+    ]
+    return {config.PROP_SOURCE: {"multi_select": preserved + [{"name": tag}]}}
+
+
+def build_properties(contact: dict, existing: dict | None = None) -> dict:
     """Map a flat contact dict to Notion property objects.
 
     Only includes properties that actually exist in the database with the
@@ -177,8 +191,7 @@ def build_properties(contact: dict) -> dict:
         properties[config.PROP_LINKEDIN] = {"url": str(contact["linkedin"])}
     if usable(config.PROP_IGB_URL, "url") and contact.get("igb_url"):
         properties[config.PROP_IGB_URL] = {"url": str(contact["igb_url"])}
-    if usable(config.PROP_IGBLIVE, "checkbox"):
-        properties[config.PROP_IGBLIVE] = {"checkbox": True}
+    properties.update(source_tag_properties(schema, "IGB2026", existing))
     return properties
 
 
@@ -224,7 +237,13 @@ def create_contact(contact: dict) -> dict:
 
 def update_contact(page_id: str, contact: dict) -> dict:
     url = f"{config.NOTION_API_URL}/pages/{page_id}"
-    payload = {"properties": build_properties(contact)}
+    # Refresh tags just before merging, rather than replacing existing sources.
+    existing = None
+    if get_schema().get(config.PROP_SOURCE) == "multi_select":
+        current = _notion_request("GET", url)
+        current.raise_for_status()
+        existing = current.json()
+    payload = {"properties": build_properties(contact, existing)}
     resp = _notion_request("PATCH", url, payload)
     resp.raise_for_status()
     return resp.json()

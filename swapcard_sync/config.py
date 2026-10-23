@@ -239,7 +239,7 @@ PROP_COMPANY = "Company"
 PROP_ROLE = "Role"
 PROP_LINKEDIN = "LinkedIn"
 PROP_NOTES = "Notes"
-PROP_IGBLIVE = "iGBLive"
+PROP_SOURCE = "Source1"
 PROP_IGB_URL = "IGB URL"
 # Status column the enricher stamps so it never reprocesses a row: "Yes" when a
 # verified profile was written, "Skipped" when no confident match was found
