@@ -558,12 +558,29 @@ def _run_website_pass_interactive() -> None:
     company_evaluator.run_website_pass()
 
 
+def _run_sigma() -> None:
+    """Load the sibling importer without changing the existing tools' imports."""
+    from pathlib import Path
+    import sys
+    root = str(Path(__file__).resolve().parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from sigma_sync.importer import run as run_sigma
+    try:
+        run_sigma()
+    except (RuntimeError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+
+
 def main() -> None:
     """Present a simple CLI menu to pick which job to run.
 
     Honors RUN_MODE (scraper/enricher) for non-interactive/scripted runs so the
     documented `python -u main.py` command paths keep working without a TTY.
     """
+    if config.RUN_MODE in ("6", "sigma"):
+        _run_sigma()
+        return
     if config.RUN_MODE in ("1", "scraper", "swapcard"):
         run()
         return
@@ -589,14 +606,15 @@ def main() -> None:
     print("  [3] Run AI Company Evaluator (BlocksRace lead qualifier)")
     print("  [4] Run Website Domain Finder (already-evaluated companies)")
     print("  [5] Run Conference Scout Telegram Bot")
+    print("  [6] Run SiGMA World Attendee Importer")
     print("-" * 60)
 
     try:
-        choice = input("Select an option [1/2/3/4/5]: ").strip()
+        choice = input("Select an option [1/2/3/4/5/6]: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nNo selection made. Exiting. "
               "(Tip: set RUN_MODE=scraper, RUN_MODE=enricher, RUN_MODE=evaluator, "
-              "RUN_MODE=website, or RUN_MODE=bot for non-interactive runs.)")
+              "RUN_MODE=website, RUN_MODE=bot, or RUN_MODE=sigma for non-interactive runs.)")
         return
 
     if choice == "1":
@@ -610,8 +628,10 @@ def main() -> None:
     elif choice == "5":
         import telegram_bot
         telegram_bot.run()
+    elif choice == "6":
+        _run_sigma()
     else:
-        print(f"Unknown option {choice!r}. Please run again and choose 1–5.")
+        print(f"Unknown option {choice!r}. Please run again and choose 1–6.")
 
 
 if __name__ == "__main__":

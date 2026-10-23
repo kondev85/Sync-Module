@@ -22,12 +22,14 @@ WORKDIR /app/swapcard_sync
 
 # Copy source — this layer rebuilds only when code changes
 COPY swapcard_sync/ ./
+COPY sigma_sync/ /app/sigma_sync/
 
 # Default: run the Telegram Conference Scout bot.
 # Override by passing a different RUN_MODE environment variable:
 #   RUN_MODE=scraper   → Swapcard scraper & Notion sync
 #   RUN_MODE=enricher  → LinkedIn URL enricher
 #   RUN_MODE=evaluator → AI company evaluator
+#   RUN_MODE=sigma     → SiGMA Match importer (SIGMA_COOKIE required)
 #   RUN_MODE=bot       → Telegram Conference Scout (default)
 ENV RUN_MODE=bot
 

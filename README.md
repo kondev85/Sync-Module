@@ -15,6 +15,7 @@ Built for the iGB Live conference. The Telegram bot runs continuously on a Linux
 5. [Running Without Docker](#5-running-without-docker)
 6. [Environment Variables Reference](#6-environment-variables-reference)
 7. [Troubleshooting](#10-troubleshooting)
+8. [SiGMA World Attendee Importer](#8-sigma-world-attendee-importer)
 
 ---
 
@@ -178,6 +179,7 @@ This shows an interactive menu:
   [3] Run AI Company Evaluator (BlocksRace lead qualifier)
   [4] Run Website Domain Finder (already-evaluated companies)
   [5] Run Conference Scout Telegram Bot
+  [6] Run SiGMA World Attendee Importer
 ------------------------------------------------------------
 ```
 
@@ -189,6 +191,7 @@ RUN_MODE=enricher python -u main.py   # runs the LinkedIn enricher
 RUN_MODE=evaluator python -u main.py  # runs the AI evaluator
 RUN_MODE=website   python -u main.py  # runs the website domain finder
 RUN_MODE=bot       python -u main.py  # starts the Telegram bot
+RUN_MODE=sigma     python -u main.py  # SiGMA importer (defaults to a 20-contact cap)
 ```
 
 ## 6. Environment Variables Reference
@@ -206,6 +209,7 @@ All variables are optional unless marked **required**. Set them in `.env` or pas
 | `SWAPCARD_BEARER_TOKEN` | Scraper only | — | Bearer token captured from browser DevTools |
 | `SWAPCARD_COOKIE` | Scraper only | — | Cookie header captured from browser DevTools |
 | `SERPER_API_KEY` | Optional | — | Serper.dev API key (only needed if `SEARCH_BACKEND=serper`) |
+| `SIGMA_COOKIE` | SiGMA importer only | — | Full Cookie header from a logged-in SiGMA Match browser session; keep secret |
 
 
 ---
@@ -242,3 +246,185 @@ Look at the last index number printed in the logs (e.g. `[1847]`). Subtract ~20 
 SKIP_CONTACTS=1827 ENRICH_PROFILES=1 python -u main.py
 ```
 A small overlap is safe — the scraper deduplicates by name and updates existing rows rather than creating duplicates.
+
+---
+
+## 8. SiGMA World Attendee Importer
+
+The separate `sigma_sync/` package imports attendees from **SiGMA Match** into
+the same Notion Lead Pool. It reuses the existing configuration and authenticated,
+retrying Notion client. It does **not** change the Swapcard/iGB importer, run AI
+evaluation automatically, or send messages or connection requests on SiGMA.
+All SiGMA requests are read-only `GET` requests.
+
+### Credentials and access
+
+Only these three secrets are needed for this import:
+
+| Secret | Purpose |
+|---|---|
+| `SIGMA_COOKIE` | Full `Cookie` request header copied from your logged-in browser at `https://match.sigma.world` |
+| `NOTION_API_TOKEN` | Existing Notion integration token with read/update/insert access to the Lead Pool |
+| `NOTION_DATABASE_ID` | Existing Lead Pool database ID |
+
+To obtain the cookie: sign in to SiGMA Match, open your browser's developer tools,
+select **Network**, open the attendee list, select its `/attendees?page=...`
+request, and copy the **Cookie request-header value**. Save it as `SIGMA_COOKIE`
+in Replit Secrets or your local root `.env`. Do not share it in chat, commit it,
+or put it in a command where it will remain in shell history.
+No separate SiGMA API key, Gemini key, or search key is required.
+The importer URL-decodes the `XSRF-TOKEN` cookie for `X-XSRF-TOKEN` and sends
+`X-Requested-With: XMLHttpRequest`. A 401/419 or login redirect stops the import
+with **“SiGMA cookie expired, paste a new one”**.
+
+### First test — 20 Operator attendees only
+
+From the repository root, in a Linux/macOS terminal:
+
+```bash
+RUN_MODE=sigma MAX_CONTACTS=20 SIGMA_BUSINESS_TYPES=Operator python -u swapcard_sync/main.py
+```
+
+Or directly, without loading the evaluator/enricher:
+
+```bash
+MAX_CONTACTS=20 SIGMA_BUSINESS_TYPES=Operator python -u -m sigma_sync
+```
+
+In **VS Code on Windows**, open the repository folder, install the Python
+extension, choose your Python interpreter, install the existing requirements
+(including `python-dotenv` if not already installed), and use PowerShell:
+
+```powershell
+python -m pip install -r swapcard_sync/requirements.txt python-dotenv
+$env:RUN_MODE = "sigma"
+$env:MAX_CONTACTS = "20"
+$env:SIGMA_BUSINESS_TYPES = "Operator"
+python -u swapcard_sync/main.py
+```
+
+The capped run **writes to the real Notion database**, not a dry run. It prints a
+per-attendee table and totals for `created`, `updated`, `skipped`,
+`check-duplicate`, and `error`, then exits. A `check-duplicate` row is a newly
+created row flagged for manual review; it is not also counted under `created`.
+The importer does not automatically start a full run, the enricher, or evaluator.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RUN_MODE` | Menu | Use `sigma` or menu option **6** |
+| `SIGMA_BUSINESS_TYPES` | Empty = all | Case-insensitive comma-separated business types, e.g. `Operator,Fintech`; a match on any type qualifies |
+| `MAX_CONTACTS` | **20 for SiGMA when unset/empty** | Maximum qualifying attendees attempted, including already-imported skips. Explicit `0` removes the cap; use only after approving a full import |
+| `SKIP_CONTACTS` | `0` | Offset in the **unfiltered source list**, not a count of Operators; use printed source indexes to resume |
+| `PAGE_DELAY_MIN` / `PAGE_DELAY_MAX` | `1.5` / `4.0` seconds | Random delay between SiGMA requests, including profile requests |
+| `ROW_INSERT_INTERVAL` | `0.3` seconds | Notion pagination/write pacing |
+| `SWAPCARD_MAX_RETRIES` / `SWAPCARD_RETRY_WAIT` | `5` / `2.0` seconds | Existing shared retry settings reused for SiGMA GETs; exponential backoff and numeric `Retry-After` support |
+| `NOTION_MAX_RETRIES` / `NOTION_RETRY_WAIT` | `5` / `2.0` seconds | Existing Notion retry settings; non-idempotent creates are not retried on 5xx |
+
+The list uses 20 attendees per page and the current `totalUserCount` rather than
+a hard-coded event size. Filtering happens **before** profile requests. It may
+read several list pages to reach 20 Operators. Already-imported source URLs do
+not need another profile request. Profile retrieval first requests JSON; the
+parser also handles SiGMA's HTML-embedded Inertia attendee data and conventional
+labelled HTML profiles. Unexpected profile shapes stop the run instead of
+silently creating incomplete rows.
+
+### Notion columns and mapping
+
+Create the following columns yourself if they do not already exist. Names are
+case-sensitive. The importer **never changes the database schema**; it prints
+missing/wrong-type columns and skips writing them. `Name` must be a Title column.
+The Lead Pool uses uppercase **`SIGMA URL`**. The importer also accepts the
+mixed-case `SiGMA URL` from the original specification; if both exist, it writes
+to `SIGMA URL` and checks both for previously imported source URLs.
+
+| Column | Type | SiGMA value |
+|---|---|---|
+| `Name` | Title | `first_name last_name`, retaining the supplied surname initial |
+| `Role` | Text | `job_title` |
+| `Company` | Text | `company` |
+| `LinkedIn` | URL | Profile LinkedIn link |
+| `Website Domain` | URL | Profile website (adds `https://` when necessary) |
+| `Email` | Email or Text | Email only when it appears in the biography; never taken from account/session fields |
+| `Notes` | Text | Biography (including booth/Telegram mentions), explicit booth/Telegram fields, What I Provide, I'm Looking For, provide/looking-for product/service categories, continents, languages |
+| `SIGMA URL` | **URL** | `https://match.sigma.world/attendees/{uuid}`; strongly recommended for safe repeat imports |
+| `SiGMAWorld` | **Checkbox** | Checked |
+| `Business Type` | **Multi-select** | Business types from the list |
+| `Status` | Multi-select, Select, Status, or Text | New rows: `New`; ambiguous duplicate candidates: `Check duplicate` |
+
+For a Notion **Status**-type column, create the `New` and `Check duplicate` options
+before running: Notion does not create new Status options through page writes.
+Missing `SIGMA URL` (and the mixed-case fallback) disables the strongest repeat-import check. In particular,
+an ambiguous duplicate row cannot be reliably recognized on a later run without
+that column. Add it before larger imports.
+
+### Duplicate rules and field protection
+
+The importer reads **all pages** of the existing Notion database before writing,
+then checks in this order:
+
+1. **Same SiGMA URL:** skip the attendee entirely.
+2. **Same LinkedIn URL:** update the matching row. URL comparison ignores
+   `www.`, scheme, query strings, letter case, and trailing slashes.
+3. **Same first name + surname initial + normalized company:** update a unique
+   match. First names are case-insensitive. Company comparison strips punctuation
+   and legal/generic words `ltd`, `limited`, `plc`, `inc`, `llc`, `group`, `gmbh`,
+   `sa`, `srl`, `bv`, `co`. For example, **Oliver M. / Playtech** matches
+   **Oliver Marshall / Playtech plc**.
+4. **Multiple candidates:** do not choose a row. Create a row with
+   `Status = Check duplicate` and candidate names in `Notes`. Multiple exact
+   LinkedIn matches are also treated conservatively this way.
+5. **No match:** create a row with `Status = New`.
+
+Updates fetch the current row again and **only fill empty mapped fields**.
+Existing names, full surnames, emails, notes, roles, websites, LinkedIn URLs,
+and statuses are preserved. The only overwrite exceptions are `SiGMAWorld`,
+`SIGMA URL`, and `Business Type`. The importer does not tick `iGBLive`, replace
+`IGB URL`, or touch AI/enricher stamps. Updated and created rows are indexed
+immediately for subsequent duplicate checks in the same run.
+
+If a write fails, the import stops and prints its partial results; it does not
+blindly retry a possibly successful creation. Review Notion before restarting
+after a connection failure. Index-based resume assumes the source ordering has
+not changed.
+
+### Existing tools after the import
+
+Run `RUN_MODE=enricher` or `RUN_MODE=evaluator` as before. Both operate on the
+same Notion columns, without changes. An abbreviated surname can make the
+enricher's existing identity checks less conclusive; review uncertain matches.
+The importer never expands a surname initial by guessing.
+
+### Docker on your own VPS
+
+The image includes the sibling importer. Rebuild it once after pulling these
+changes, then run an explicit one-shot capped import:
+
+```bash
+docker compose build scraper
+docker compose run --rm -e RUN_MODE=sigma -e SIGMA_COOKIE \
+  -e MAX_CONTACTS=20 -e SIGMA_BUSINESS_TYPES=Operator scraper
+```
+
+For that command, `SIGMA_COOKIE` must already be exported in the host shell;
+alternatively place it in the project's root `.env` and use
+`docker compose run --rm --env-from-file .env -e RUN_MODE=sigma -e MAX_CONTACTS=20 -e SIGMA_BUSINESS_TYPES=Operator scraper`
+if your Docker Compose version supports `--env-from-file`.
+The existing bot and one-shot service defaults remain unchanged.
+
+### Module/function guide
+
+| Module | Functions/classes and purpose |
+|---|---|
+| `sigma_sync/__init__.py` | Exposes the existing sibling configuration/Notion modules without modifying them |
+| `client.py` | `SigmaClient`: owns the browser session; `_xsrf_header()` decodes the current CSRF token; `get()` issues paced GET-only requests with retry/auth guards; `attendees()` validates paginated list responses; `profile()` retrieves and parses one profile; `close()` releases the session. `CookieExpired` marks an expired login |
+| `profiles.py` | `ProfileHTML` extracts embedded attendee JSON or labelled HTML; `_attendee()` selects only known attendee paths, excluding the signed-in user's metadata; `parse_profile()` chooses JSON/Inertia/HTML parsing; `text()` flattens strings/lists; `_label()` normalizes section headings; `clean_url()` validates HTTP(S) links; `plain_html()` strips biography markup; `build_contact()` assembles the mapped fields and full Notes |
+| `notion_import.py` | `value()` reads Notion values; `normalized_company()`, `name_key()`, and `url_key()` build duplicate keys; `property_name()` resolves the supported source-URL column spellings; `rich_text()` splits long text into Notion-compatible blocks; `build_properties()` applies schema and fill-empty rules; `NotionImporter._load()` paginates the CRM; `_index()` builds/rebuilds lookups; `already_imported()` checks source URLs; `sync()` resolves duplicates and writes the appropriate create/update |
+| `importer.py` | `run()` validates secrets, applies limits/filtering, paginates attendees, stops on failure, and closes resources; `print_summary()` prints per-row results and counts even after an interrupted import |
+| `__main__.py` | Enables `python -m sigma_sync` and clear CLI failures |
+| `swapcard_sync/main.py` | `_run_sigma()` loads the sibling package; `main()` adds `RUN_MODE=sigma` and menu option 6 without changing the existing modes |
+
+Run the offline tests from the repository root:
+
+```bash
+python -m unittest discover -s tests -p 'test_sigma*.py' -v
+```
