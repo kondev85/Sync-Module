@@ -313,6 +313,7 @@ The importer does not automatically start a full run, the enricher, or evaluator
 |---|---|---|
 | `RUN_MODE` | Menu | Use `sigma` or menu option **6** |
 | `SIGMA_BUSINESS_TYPES` | Empty = all | Case-insensitive comma-separated business types, e.g. `Operator,Fintech`; a match on any type qualifies |
+| `SIGMA_PIPELINE_CHECK` | **On (`1`)** | Check cached Pipeline Contacts, add `SiGMA2026` to Source, and append a one-time Lead Pool note; `0`, `false`, `no`, or `off` disables the entire check |
 | `MAX_CONTACTS` | **20 for SiGMA when unset/empty** | Maximum qualifying attendees attempted, including already-imported skips. Explicit `0` removes the cap; use only after approving a full import |
 | `SKIP_CONTACTS` | `0` | Offset in the **unfiltered source list**, not a count of Operators; use printed source indexes to resume |
 | `PAGE_DELAY_MIN` / `PAGE_DELAY_MAX` | `1.5` / `4.0` seconds | Random delay between SiGMA requests, including profile requests |
@@ -322,8 +323,10 @@ The importer does not automatically start a full run, the enricher, or evaluator
 
 The list uses 20 attendees per page and the current `totalUserCount` rather than
 a hard-coded event size. Filtering happens **before** profile requests. It may
-read several list pages to reach 20 Operators. Already-imported source URLs do
-not need another profile request. Profile retrieval first requests JSON; the
+read several list pages to reach 20 Operators. With Pipeline checking disabled,
+already-imported source URLs do not need another profile request. With the
+default Pipeline check enabled, their profiles are still read for matching.
+Profile retrieval first requests JSON; the
 parser also handles SiGMA's HTML-embedded Inertia attendee data and conventional
 labelled HTML profiles. Unexpected profile shapes stop the run instead of
 silently creating incomplete rows.
@@ -394,6 +397,60 @@ same Notion columns, without changes. An abbreviated surname can make the
 enricher's existing identity checks less conclusive; review uncertain matches.
 The importer never expands a surname initial by guessing.
 
+### Pipeline membership check
+
+With `SIGMA_PIPELINE_CHECK=1` (the default), the existing Notion integration must
+also have access to **Pipeline Contacts** and **PipeLine Companies**. No additional
+token or database-ID variable is needed: the importer discovers these exact
+database titles, validates the columns, and loads both databases completely once
+at startup. Matching uses in-memory indexes, not per-attendee Pipeline queries.
+Make sure only one accessible database has each title.
+
+Required Pipeline schema:
+
+- Pipeline Contacts: `Name` (Title), `LinkedIn` (URL), `Company` (Relation to
+  PipeLine Companies), `Source` (Multi-select with existing option `SiGMA2026`).
+- PipeLine Companies: `Company` (Title).
+
+Matching stops at the first rule with any results:
+
+1. Same normalized LinkedIn URL (lowercase; ignore scheme, `www.`, query string,
+   and trailing slash).
+2. Same case-insensitive first name, surname initial, and normalized company
+   title from the Company relation. It uses the same punctuation/legal-suffix
+   normalization as the Lead Pool matcher.
+3. Two or more matches under either rule: tag nobody, print
+   `pipeline ambiguous: <names>`, and do not fall through to a weaker rule.
+
+For a unique match, the **only Pipeline mutation** is adding `SiGMA2026` to
+`Source`, retaining all existing options. An already-tagged match requires no
+Pipeline write. The in-memory tag cache is updated after successful writes, so
+repeated attendees do not trigger duplicate patches.
+The importer never creates/deletes Pipeline contacts or companies, edits their
+other fields, or changes any Pipeline database schema.
+
+The matching Lead Pool row also gets a separate line,
+`In Pipeline: <full Pipeline name>`, once only. This explicit append is the sole
+exception to preserving filled Lead Pool Notes: existing text, links, and
+formatting are retained. It also works for attendees skipped because their
+`SIGMA URL` was already imported. Unique Pipeline matches are required before a
+note is added; ambiguous matches never add a speculative Pipeline note.
+
+With Pipeline enabled, already-imported attendees still have their SiGMA profile
+read for LinkedIn-first matching. With it disabled, the original fast
+source-URL skip remains unchanged. The summary includes **pipeline tagged**,
+**pipeline already tagged**, and **pipeline ambiguous** counts.
+
+Pipeline Source updates preserve the startup snapshot of existing tags. Avoid
+editing Source tags concurrently during an import; the Notion API does not offer
+an atomic add-to-multi-select operation.
+
+Example capped follow-up test, keeping the Operator filter:
+
+```bash
+RUN_MODE=sigma MAX_CONTACTS=40 SIGMA_BUSINESS_TYPES=Operator SIGMA_PIPELINE_CHECK=1 python -u swapcard_sync/main.py
+```
+
 ### Docker on your own VPS
 
 The image includes the sibling importer. Rebuild it once after pulling these
@@ -420,6 +477,7 @@ The existing bot and one-shot service defaults remain unchanged.
 | `profiles.py` | `ProfileHTML` extracts embedded attendee JSON or labelled HTML; `_attendee()` selects only known attendee paths, excluding the signed-in user's metadata; `parse_profile()` chooses JSON/Inertia/HTML parsing; `text()` flattens strings/lists; `_label()` normalizes section headings; `clean_url()` validates HTTP(S) links; `plain_html()` strips biography markup; `build_contact()` assembles the mapped fields and full Notes |
 | `notion_import.py` | `value()` reads Notion values; `normalized_company()`, `name_key()`, and `url_key()` build duplicate keys; `property_name()` resolves the supported source-URL column spellings; `rich_text()` splits long text into Notion-compatible blocks; `build_properties()` applies schema and fill-empty rules; `NotionImporter._load()` paginates the CRM; `_index()` builds/rebuilds lookups; `already_imported()` checks source URLs; `sync()` resolves duplicates and writes the appropriate create/update |
 | `importer.py` | `run()` validates secrets, applies limits/filtering, paginates attendees, stops on failure, and closes resources; `print_summary()` prints per-row results and counts even after an interrupted import |
+| `pipeline.py` | `discover_databases()` resolves the two exact Pipeline database titles; `_paginate()` loads all startup pages; `PipelineCheck` validates/caches contacts and company titles, `_full_relation()` handles truncated company relations at startup, `match()` applies ordered in-memory rules, and `check()` only adds the missing Source option or logs ambiguity |
 | `__main__.py` | Enables `python -m sigma_sync` and clear CLI failures |
 | `swapcard_sync/main.py` | `_run_sigma()` loads the sibling package; `main()` adds `RUN_MODE=sigma` and menu option 6 without changing the existing modes |
 

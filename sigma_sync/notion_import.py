@@ -116,6 +116,7 @@ class NotionImporter:
         self.by_sigma = {}
         self.by_linkedin = {}
         self.by_name = {}
+        self.last_page_id = None
         self._load()
 
     def _index(self):
@@ -161,7 +162,11 @@ class NotionImporter:
         return bool(self.by_sigma.get(url_key(sigma_url)))
 
     def sync(self, contact: dict) -> tuple[str, str]:
+        self.last_page_id = None
         if self.already_imported(contact["sigma_url"]):
+            matches = self.by_sigma[url_key(contact["sigma_url"])]
+            if len(set(matches)) == 1:
+                self.last_page_id = matches[0]
             return "skipped", "SIGMA URL already imported"
         matches = self.by_linkedin.get(url_key(contact.get("linkedin", "")), [])
         reason = "LinkedIn match"
@@ -203,6 +208,38 @@ class NotionImporter:
         finally:
             time.sleep(config.ROW_INSERT_INTERVAL)
         page = response.json()
+        self.last_page_id = page["id"]
         self.pages[page["id"]] = page
         self._index()
         return status, note
+
+    def add_pipeline_note(self, page_id: str, pipeline_name: str) -> bool:
+        """Append one explicit marker, retaining existing rich text and other fields."""
+        if not page_id:
+            raise RuntimeError("Cannot uniquely identify the Lead Pool row for the Pipeline note.")
+        if self.schema.get(config.PROP_NOTES) != "rich_text":
+            raise RuntimeError("Lead Pool Notes must be Text to record Pipeline membership.")
+        response = notion_sync._notion_request("GET", f"{config.NOTION_API_URL}/pages/{page_id}")
+        response.raise_for_status()
+        page = response.json()
+        old = page.get("properties", {}).get(config.PROP_NOTES, {})
+        marker = f"In Pipeline: {pipeline_name}"
+        if any(line.strip() == marker for line in value(old).splitlines()):
+            return False
+        # Reuse rich-text objects to preserve links/annotations, stripping only
+        # read-only response fields that Notion does not accept on write.
+        preserved = [
+            {key: part[key] for key in ("type", "text", "mention", "equation", "annotations") if key in part}
+            for part in old.get("rich_text", [])
+        ]
+        addition = rich_text(("\n\n" if preserved else "") + marker)
+        if len(preserved) + len(addition) > 100:
+            raise RuntimeError("Lead Pool Notes is too long to append the Pipeline marker safely.")
+        response = notion_sync._notion_request(
+            "PATCH", f"{config.NOTION_API_URL}/pages/{page_id}",
+            {"properties": {config.PROP_NOTES: {"rich_text": preserved + addition}}},
+        )
+        response.raise_for_status()
+        self.pages[page_id] = response.json()
+        time.sleep(config.ROW_INSERT_INTERVAL)
+        return True

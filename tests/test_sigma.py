@@ -226,7 +226,7 @@ class ClientTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     @patch.dict(os.environ, {"SIGMA_COOKIE": "fake", "NOTION_API_TOKEN": "fake",
                             "NOTION_DATABASE_ID": "fake", "MAX_CONTACTS": "2",
-                            "SIGMA_BUSINESS_TYPES": "Operator"})
+                            "SIGMA_BUSINESS_TYPES": "Operator", "SIGMA_PIPELINE_CHECK": "0"})
     @patch.object(importer.config, "SKIP_CONTACTS", 0)
     @patch.object(importer, "NotionImporter")
     @patch.object(importer, "SigmaClient")
@@ -248,7 +248,7 @@ class RunnerTests(unittest.TestCase):
         client_obj.close.assert_called_once()
 
     @patch.dict(os.environ, {"SIGMA_COOKIE": "fake", "NOTION_API_TOKEN": "fake",
-                            "NOTION_DATABASE_ID": "fake", "MAX_CONTACTS": "1"})
+                            "NOTION_DATABASE_ID": "fake", "MAX_CONTACTS": "1", "SIGMA_PIPELINE_CHECK": "0"})
     @patch.object(importer.config, "SKIP_CONTACTS", 20)
     @patch.object(importer, "NotionImporter")
     @patch.object(importer, "SigmaClient")

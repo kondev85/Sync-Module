@@ -8,9 +8,10 @@ import config
 from .client import CookieExpired, SigmaClient
 from .notion_import import NotionImporter
 from .profiles import build_contact, text
+from .pipeline import PipelineCheck
 
 
-def print_summary(rows, filtered, offset_skipped):
+def print_summary(rows, filtered, offset_skipped, pipeline_counts=None, pipeline_enabled=False):
     print("\nSiGMA import results")
     print(f"{'#':<5} {'Name':<30} {'Result':<17} Details")
     print("-" * 100)
@@ -21,6 +22,9 @@ def print_summary(rows, filtered, offset_skipped):
     for status in ("created", "updated", "skipped", "check-duplicate", "error"):
         print(f"{status:<19}{counts[status]}")
     print(f"Filtered out: {filtered}; skipped by offset: {offset_skipped}")
+    print(f"Pipeline check: {'on' if pipeline_enabled else 'off'}")
+    for status in ("pipeline tagged", "pipeline already tagged", "pipeline ambiguous"):
+        print(f"{status:<26}{(pipeline_counts or {}).get(status, 0)}")
 
 
 def run():
@@ -37,11 +41,18 @@ def run():
     print(f"SiGMA import | cap: {cap or 'unlimited'} | offset: {skip} | types: {', '.join(sorted(types)) or 'all'}")
     client = SigmaClient(os.environ["SIGMA_COOKIE"])
     rows, filtered, offset_skipped = [], 0, 0
+    pipeline_enabled = os.environ.get("SIGMA_PIPELINE_CHECK", "1").strip().casefold() not in (
+        "0", "false", "no", "off",
+    )
+    pipeline = None
     try:
         # Validate source auth before spending time or writes on Notion.
         page = skip // 20 + 1
         items, total = client.attendees(page)
+        pipeline = PipelineCheck() if pipeline_enabled else None
         notion = NotionImporter()
+        if pipeline is not None and notion.schema.get(config.PROP_NOTES) != "rich_text":
+            raise RuntimeError("Lead Pool Notes must be Text before enabling the Pipeline check.")
         last_page = (total + 19) // 20
         stop = False
         while page <= last_page and not stop:
@@ -65,7 +76,7 @@ def run():
                 try:
                     attendee_id = str(UUID(item["id"]))
                     sigma_url = f"https://match.sigma.world/attendees/{attendee_id}"
-                    if notion.already_imported(sigma_url):
+                    if notion.already_imported(sigma_url) and pipeline is None:
                         status, note = "skipped", "SIGMA URL already imported"
                     else:
                         profile = client.profile(attendee_id)
@@ -75,6 +86,11 @@ def run():
                         if not contact["name"]:
                             raise ValueError("Attendee has no name; not imported.")
                         status, note = notion.sync(contact)
+                        if pipeline is not None:
+                            pipeline_status, pipeline_name = pipeline.check(contact)
+                            note += f"; {pipeline_status}"
+                            if pipeline_name:
+                                notion.add_pipeline_note(notion.last_page_id, pipeline_name)
                 except CookieExpired:
                     raise
                 except Exception as exc:
@@ -98,4 +114,7 @@ def run():
         print(f"\nStopped after {len(rows)} matching attendees. No full import was started." if cap else "\nImport complete.")
     finally:
         client.close()
-        print_summary(rows, filtered, skip - skip % 20 + offset_skipped)
+        print_summary(
+            rows, filtered, skip - skip % 20 + offset_skipped,
+            pipeline.counts if pipeline is not None else None, pipeline_enabled,
+        )
